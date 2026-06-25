@@ -110,6 +110,16 @@ class SearchResult:
     score: float = 0.0
 
 
+@dataclass(slots=True)
+class WikiLink:
+    from_id: str
+    from_title: str
+    to_id: str
+    to_title: str
+    relation: str
+    created_at: str
+
+
 class WikiStore:
     """A local Wiki store scoped to a NanoBot workspace."""
 
@@ -425,6 +435,67 @@ class WikiStore:
                 (from_page.id, to_page.id, relation.strip() or "related", utc_now()),
             )
         return from_page, to_page
+
+    def list_links(self) -> list[WikiLink]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    links.from_id,
+                    from_page.title AS from_title,
+                    links.to_id,
+                    to_page.title AS to_title,
+                    links.relation,
+                    links.created_at
+                FROM links
+                JOIN pages AS from_page ON from_page.id = links.from_id
+                JOIN pages AS to_page ON to_page.id = links.to_id
+                ORDER BY links.created_at ASC, links.from_id ASC, links.to_id ASC
+                """
+            ).fetchall()
+        return [
+            WikiLink(
+                from_id=row["from_id"],
+                from_title=row["from_title"],
+                to_id=row["to_id"],
+                to_title=row["to_title"],
+                relation=row["relation"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def graph(self, *, limit: int = 200) -> dict[str, Any]:
+        pages = self.list_pages(limit=limit)
+        visible_ids = {page.id for page in pages}
+        links = [
+            link
+            for link in self.list_links()
+            if link.from_id in visible_ids and link.to_id in visible_ids
+        ]
+        return {
+            "nodes": [
+                {
+                    "id": page.id,
+                    "title": page.title,
+                    "page_type": page.page_type,
+                    "tags": page.tags,
+                    "updated_at": page.updated_at,
+                }
+                for page in pages
+            ],
+            "links": [
+                {
+                    "from_id": link.from_id,
+                    "from_title": link.from_title,
+                    "to_id": link.to_id,
+                    "to_title": link.to_title,
+                    "relation": link.relation,
+                    "created_at": link.created_at,
+                }
+                for link in links
+            ],
+        }
 
     def forget_page(self, selector: str, *, archive: bool = True) -> WikiPage:
         page = self.get_page(selector)

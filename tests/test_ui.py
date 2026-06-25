@@ -58,6 +58,21 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
         page = _json_get(base_url + "/api/pages/" + quote("Created From UI"))
         assert page["page"]["content"] == "Saved through the HTTP API."
 
+        link = _json_request(
+            base_url + "/api/links",
+            method="POST",
+            payload={
+                "from_selector": "Created From UI",
+                "to_selector": "UI Smoke",
+                "relation": "mentions",
+            },
+        )
+        assert link["from_page"]["title"] == "Created From UI"
+
+        graph = _json_get(base_url + "/api/graph")
+        assert {node["title"] for node in graph["nodes"]} == {"UI Smoke", "Created From UI"}
+        assert graph["links"][0]["relation"] == "mentions"
+
         deleted = _json_request(
             base_url + "/api/pages/" + quote("Created From UI"),
             method="DELETE",

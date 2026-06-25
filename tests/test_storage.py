@@ -70,6 +70,33 @@ def test_history_ingestion_and_bridge(tmp_path) -> None:
     assert BRIDGE_START in memory_path.read_text(encoding="utf-8")
 
 
+def test_page_links_and_graph(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(title="User Profile", content="User facts.")
+    store.upsert_page(title="NanoBot Project", content="Project facts.")
+
+    from_page, to_page = store.link_pages("User Profile", "NanoBot Project", "working_on")
+    assert from_page.id == "user-profile"
+    assert to_page.id == "nanobot-project"
+
+    links = store.list_links()
+    assert len(links) == 1
+    assert links[0].relation == "working_on"
+
+    graph = store.graph()
+    assert {node["id"] for node in graph["nodes"]} == {"user-profile", "nanobot-project"}
+    assert graph["links"] == [
+        {
+            "from_id": "user-profile",
+            "from_title": "User Profile",
+            "to_id": "nanobot-project",
+            "to_title": "NanoBot Project",
+            "relation": "working_on",
+            "created_at": links[0].created_at,
+        }
+    ]
+
+
 def test_skill_writer_does_not_overwrite_user_skill(tmp_path) -> None:
     store = WikiStore(tmp_path)
     skill_path = tmp_path / "skills" / "llm-wiki" / "SKILL.md"

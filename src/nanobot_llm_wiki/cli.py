@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     forget.add_argument("selector")
     forget.add_argument("--delete", action="store_true", help="Delete instead of archiving.")
 
+    link = sub.add_parser("link", help="Create a graph link between two Wiki pages.")
+    link.add_argument("from_selector")
+    link.add_argument("to_selector")
+    link.add_argument("--relation", default="related")
+
     dream = sub.add_parser("dream", help="Import new memory/history.jsonl entries.")
     dream.add_argument("--once", action="store_true", help="Run one deterministic ingestion pass.")
     dream.add_argument("--limit", type=int, default=50)
@@ -103,6 +108,10 @@ def main(argv: list[str] | None = None) -> int:
         page = store.forget_page(args.selector, archive=not args.delete)
         store.write_memory_bridge()
         print(f"Forgot {page.title} ({page.id})")
+        return 0
+    if args.command == "link":
+        from_page, to_page = store.link_pages(args.from_selector, args.to_selector, args.relation)
+        print(f"Linked {from_page.title} -> {to_page.title} ({args.relation or 'related'})")
         return 0
     if args.command == "dream":
         if not args.once:

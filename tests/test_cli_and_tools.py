@@ -21,6 +21,25 @@ def test_cli_install_and_search(tmp_path, capsys) -> None:
     assert "Projects" in out
 
 
+def test_cli_link(tmp_path, capsys) -> None:
+    assert main(["--workspace", str(tmp_path), "install"]) == 0
+    assert (
+        main([
+            "--workspace",
+            str(tmp_path),
+            "link",
+            "User Profile",
+            "Projects",
+            "--relation",
+            "uses",
+        ])
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "Linked User Profile -> Projects (uses)" in out
+    assert WikiStore(tmp_path).list_links()[0].relation == "uses"
+
+
 def test_tools_round_trip(tmp_path) -> None:
     upsert = WikiUpsertTool(tmp_path)
     search = WikiSearchTool(tmp_path)

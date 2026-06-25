@@ -61,12 +61,13 @@ nanobot-wiki status
 nanobot-wiki search "project preference"
 nanobot-wiki read "User Profile"
 nanobot-wiki upsert "Current Project" --content "Building a NanoBot memory plugin."
+nanobot-wiki link "User Profile" "Current Project" --relation working_on
 nanobot-wiki dream --once
 nanobot-wiki ui
 nanobot-wiki doctor
 ```
 
-The local UI listens on [http://127.0.0.1:8766](http://127.0.0.1:8766) by default:
+The local UI listens on [http://127.0.0.1:8766](http://127.0.0.1:8766) by default and includes a page graph view backed by the `links` table:
 
 ```bash
 nanobot-wiki ui --workspace ~/.nanobot/workspace

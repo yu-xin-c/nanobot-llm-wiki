@@ -37,6 +37,17 @@ def _split_csv(value: Any) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
+def _link_to_dict(link: Any) -> dict[str, Any]:
+    return {
+        "from_id": link.from_id,
+        "from_title": link.from_title,
+        "to_id": link.to_id,
+        "to_title": link.to_title,
+        "relation": link.relation,
+        "created_at": link.created_at,
+    }
+
+
 def build_server(workspace: str | Path | None, host: str, port: int) -> ThreadingHTTPServer:
     store = WikiStore(workspace)
 
@@ -86,6 +97,14 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
             if parsed.path == "/api/status":
                 self._send_json(store.status())
                 return
+            if parsed.path == "/api/graph":
+                query = parse_qs(parsed.query)
+                limit = int((query.get("limit") or ["200"])[0])
+                self._send_json(store.graph(limit=limit))
+                return
+            if parsed.path == "/api/links":
+                self._send_json({"links": [_link_to_dict(link) for link in store.list_links()]})
+                return
             if parsed.path == "/api/pages":
                 query = parse_qs(parsed.query)
                 limit = int((query.get("limit") or ["200"])[0])
@@ -114,6 +133,22 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path == "/api/links":
+                try:
+                    body = self._read_json()
+                    from_page, to_page = store.link_pages(
+                        str(body.get("from_selector") or "").strip(),
+                        str(body.get("to_selector") or "").strip(),
+                        str(body.get("relation") or "related").strip() or "related",
+                    )
+                except (KeyError, ValueError) as exc:
+                    self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json({
+                    "from_page": _page_to_dict(from_page),
+                    "to_page": _page_to_dict(to_page),
+                })
+                return
             if parsed.path != "/api/pages":
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
@@ -326,6 +361,54 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 14px;
     }
+    .hidden {
+      display: none !important;
+    }
+    .graph-panel {
+      display: grid;
+      gap: 12px;
+      max-width: 1120px;
+    }
+    .graph-shell {
+      min-height: 560px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: white;
+      overflow: hidden;
+    }
+    #graphSvg {
+      display: block;
+      width: 100%;
+      height: 560px;
+    }
+    .graph-link {
+      stroke: #8ca0b3;
+      stroke-width: 1.5;
+    }
+    .graph-relation {
+      fill: var(--muted);
+      font-size: 12px;
+      paint-order: stroke;
+      stroke: white;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }
+    .graph-node circle {
+      fill: #f8fbff;
+      stroke: var(--accent-2);
+      stroke-width: 2;
+    }
+    .graph-node.active circle {
+      fill: #e8f3ff;
+      stroke: var(--accent);
+      stroke-width: 3;
+    }
+    .graph-node text {
+      fill: var(--text);
+      font-size: 12px;
+      text-anchor: middle;
+      pointer-events: none;
+    }
     @media (max-width: 820px) {
       .app { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -340,6 +423,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="top">
         <div class="brand">NanoBot LLM Wiki</div>
         <button id="newBtn" title="New page">+</button>
+        <button id="graphBtn" title="Graph view">Graph</button>
       </div>
       <div class="search">
         <input id="searchInput" placeholder="Search pages">
@@ -375,19 +459,42 @@ INDEX_HTML = r"""<!doctype html>
           <label for="content">Markdown</label>
           <textarea id="content"></textarea>
         </div>
+        <div class="row">
+          <div class="field">
+            <label for="linkTarget">Link To</label>
+            <input id="linkTarget" placeholder="Page title or id">
+          </div>
+          <div class="field">
+            <label for="linkRelation">Relation</label>
+            <input id="linkRelation" value="related">
+          </div>
+        </div>
         <div class="toolbar">
           <button class="primary" type="submit">Save</button>
+          <button type="button" id="linkBtn">Link</button>
           <button type="button" id="refreshBtn">Refresh</button>
           <button class="danger" type="button" id="archiveBtn">Archive</button>
         </div>
         <div id="message" class="message"></div>
       </form>
+      <section id="graphPanel" class="graph-panel hidden">
+        <div class="toolbar">
+          <button type="button" id="backToEditorBtn">Editor</button>
+          <button type="button" id="refreshGraphBtn">Refresh Graph</button>
+        </div>
+        <div class="graph-shell">
+          <svg id="graphSvg" role="img" aria-label="Wiki page graph"></svg>
+        </div>
+        <div id="graphMessage" class="message"></div>
+      </section>
     </main>
   </div>
   <script>
-    const state = { pages: [], activeId: "" };
+    const state = { pages: [], activeId: "", graph: { nodes: [], links: [] } };
+    const svgNS = "http://www.w3.org/2000/svg";
     const $ = (id) => document.getElementById(id);
     const message = (text) => { $("message").textContent = text || ""; };
+    const graphMessage = (text) => { $("graphMessage").textContent = text || ""; };
     const pagePayload = () => ({
       id: $("pageId").value,
       title: $("title").value,
@@ -405,6 +512,15 @@ INDEX_HTML = r"""<!doctype html>
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
       return data;
+    }
+    function showEditor() {
+      $("editor").classList.remove("hidden");
+      $("graphPanel").classList.add("hidden");
+    }
+    function showGraph() {
+      $("editor").classList.add("hidden");
+      $("graphPanel").classList.remove("hidden");
+      loadGraph().catch((error) => graphMessage(error.message));
     }
     function renderList(pages) {
       state.pages = pages;
@@ -428,6 +544,8 @@ INDEX_HTML = r"""<!doctype html>
       $("tags").value = (page.tags || []).join(", ");
       $("aliases").value = (page.aliases || []).join(", ");
       $("content").value = page.content || "";
+      $("linkTarget").value = "";
+      $("linkRelation").value = "related";
       renderList(state.pages);
     }
     async function loadStatus() {
@@ -449,10 +567,111 @@ INDEX_HTML = r"""<!doctype html>
     async function loadPage(id) {
       const data = await api(`/api/pages/${encodeURIComponent(id)}`);
       fillEditor(data.page);
+      showEditor();
       message("");
     }
+    function svgEl(name, attrs = {}) {
+      const el = document.createElementNS(svgNS, name);
+      Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
+      return el;
+    }
+    function trimLabel(text, max = 24) {
+      return text.length > max ? text.slice(0, max - 1) + "…" : text;
+    }
+    async function loadGraph() {
+      state.graph = await api("/api/graph?limit=200");
+      renderGraph();
+    }
+    function renderGraph() {
+      const svg = $("graphSvg");
+      svg.innerHTML = "";
+      const width = Math.max(svg.clientWidth || 900, 640);
+      const height = Math.max(svg.clientHeight || 560, 420);
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      const defs = svgEl("defs");
+      const marker = svgEl("marker", {
+        id: "arrow",
+        viewBox: "0 0 10 10",
+        refX: "9",
+        refY: "5",
+        markerWidth: "6",
+        markerHeight: "6",
+        orient: "auto-start-reverse"
+      });
+      marker.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#8ca0b3" }));
+      defs.appendChild(marker);
+      svg.appendChild(defs);
+
+      const nodes = state.graph.nodes || [];
+      const links = state.graph.links || [];
+      if (!nodes.length) {
+        const empty = svgEl("text", { x: width / 2, y: height / 2, "text-anchor": "middle", fill: "#677085" });
+        empty.textContent = "No Wiki pages yet.";
+        svg.appendChild(empty);
+        graphMessage("");
+        return;
+      }
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = Math.max(90, Math.min(width, height) * 0.34);
+      const positions = new Map();
+      nodes.forEach((node, index) => {
+        const angle = nodes.length === 1 ? -Math.PI / 2 : (Math.PI * 2 * index) / nodes.length - Math.PI / 2;
+        positions.set(node.id, {
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius
+        });
+      });
+
+      links.forEach((link) => {
+        const from = positions.get(link.from_id);
+        const to = positions.get(link.to_id);
+        if (!from || !to) return;
+        const line = svgEl("line", {
+          class: "graph-link",
+          x1: from.x,
+          y1: from.y,
+          x2: to.x,
+          y2: to.y,
+          "marker-end": "url(#arrow)"
+        });
+        svg.appendChild(line);
+
+        const label = svgEl("text", {
+          class: "graph-relation",
+          x: (from.x + to.x) / 2,
+          y: (from.y + to.y) / 2 - 6,
+          "text-anchor": "middle"
+        });
+        label.textContent = trimLabel(link.relation, 18);
+        svg.appendChild(label);
+      });
+
+      nodes.forEach((node) => {
+        const pos = positions.get(node.id);
+        const group = svgEl("g", { class: "graph-node" + (node.id === state.activeId ? " active" : "") });
+        group.setAttribute("tabindex", "0");
+        group.style.cursor = "pointer";
+        group.addEventListener("click", () => loadPage(node.id));
+        group.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") loadPage(node.id);
+        });
+        group.appendChild(svgEl("circle", { cx: pos.x, cy: pos.y, r: 30 }));
+        const title = svgEl("text", { x: pos.x, y: pos.y + 46 });
+        title.textContent = trimLabel(node.title);
+        group.appendChild(title);
+        svg.appendChild(group);
+      });
+
+      graphMessage(`${nodes.length} pages · ${links.length} links`);
+    }
     $("newBtn").addEventListener("click", () => fillEditor({ title: "", page_type: "note", tags: [], aliases: [], content: "" }));
+    $("graphBtn").addEventListener("click", showGraph);
     $("refreshBtn").addEventListener("click", loadPages);
+    $("refreshGraphBtn").addEventListener("click", () => loadGraph().catch((error) => graphMessage(error.message)));
+    $("backToEditorBtn").addEventListener("click", showEditor);
     $("searchBtn").addEventListener("click", searchPages);
     $("searchInput").addEventListener("keydown", (event) => {
       if (event.key === "Enter") searchPages();
@@ -466,6 +685,24 @@ INDEX_HTML = r"""<!doctype html>
       fillEditor({ title: "", page_type: "note", tags: [], aliases: [], content: "" });
       await loadPages();
       message("Archived.");
+    });
+    $("linkBtn").addEventListener("click", async () => {
+      const from = $("pageId").value || $("title").value;
+      const to = $("linkTarget").value;
+      if (!from || !to) {
+        message("Choose the current page and a target page first.");
+        return;
+      }
+      await api("/api/links", {
+        method: "POST",
+        body: JSON.stringify({
+          from_selector: from,
+          to_selector: to,
+          relation: $("linkRelation").value || "related"
+        })
+      });
+      $("linkTarget").value = "";
+      message("Linked.");
     });
     $("editor").addEventListener("submit", async (event) => {
       event.preventDefault();
