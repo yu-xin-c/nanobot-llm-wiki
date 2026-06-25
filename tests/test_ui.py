@@ -37,6 +37,8 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
         with urlopen(base_url + "/", timeout=5) as response:
             html = response.read().decode("utf-8")
         assert "NanoBot LLM Wiki" in html
+        assert "Drag nodes to arrange the graph" in html
+        assert "Reset Layout" in html
 
         status = _json_get(base_url + "/api/status")
         assert status["pages"] == 1

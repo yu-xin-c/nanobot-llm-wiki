@@ -223,18 +223,18 @@ INDEX_HTML = r"""<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f4f6f8;
+      --bg: #f5f7fb;
       --panel: #ffffff;
-      --panel-soft: #f9fbfc;
-      --line: #d9e0e7;
-      --line-strong: #c5ced8;
-      --text: #182131;
-      --muted: #667085;
-      --accent: #0f766e;
-      --accent-2: #2563eb;
-      --accent-3: #b7791f;
-      --danger: #b42318;
-      --shadow: 0 18px 42px rgba(25, 35, 50, 0.08);
+      --panel-soft: #f8fafc;
+      --line: #d8e1ec;
+      --line-strong: #bdc9d8;
+      --text: #172033;
+      --muted: #65748b;
+      --accent: #087f7a;
+      --accent-2: #5657d9;
+      --accent-3: #c47a00;
+      --danger: #c2414d;
+      --shadow: 0 18px 42px rgba(38, 48, 72, 0.09);
     }
     * { box-sizing: border-box; }
     body {
@@ -270,6 +270,10 @@ INDEX_HTML = r"""<!doctype html>
       border-color: var(--accent);
       background: var(--accent);
       color: white;
+    }
+    button.primary:hover {
+      border-color: #066a66;
+      background: #066f6b;
     }
     button.danger {
       border-color: #f3b3ad;
@@ -376,7 +380,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .item.active {
       border-color: var(--accent-2);
-      box-shadow: inset 3px 0 0 var(--accent-2), 0 8px 18px rgba(37, 99, 235, 0.08);
+      box-shadow: inset 3px 0 0 var(--accent-2), 0 8px 18px rgba(86, 87, 217, 0.10);
     }
     .item-title {
       font-weight: 650;
@@ -399,8 +403,8 @@ INDEX_HTML = r"""<!doctype html>
       align-items: center;
       min-height: 20px;
       border-radius: 999px;
-      background: #eef7f6;
-      color: #0b5c55;
+      background: #edf7f5;
+      color: #0b625d;
       font-size: 11px;
       padding: 2px 7px;
     }
@@ -428,7 +432,7 @@ INDEX_HTML = r"""<!doctype html>
       gap: 4px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #eef2f5;
+      background: #edf1f6;
       padding: 3px;
     }
     .view-switch button {
@@ -516,22 +520,24 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       background:
-        linear-gradient(#eef3f8 1px, transparent 1px),
-        linear-gradient(90deg, #eef3f8 1px, transparent 1px),
-        #fbfdff;
-      background-size: 24px 24px;
+        linear-gradient(#ecf1f6 1px, transparent 1px),
+        linear-gradient(90deg, #ecf1f6 1px, transparent 1px),
+        #fcfdff;
+      background-size: 28px 28px;
       overflow: hidden;
     }
     #graphSvg {
       display: block;
       width: 100%;
       height: 560px;
+      touch-action: none;
+      user-select: none;
     }
     .graph-link {
       fill: none;
-      stroke: #8799ad;
-      stroke-width: 1.7;
-      opacity: 0.82;
+      stroke: #8a9ab0;
+      stroke-width: 1.8;
+      opacity: 0.78;
     }
     .graph-relation {
       fill: var(--muted);
@@ -541,13 +547,34 @@ INDEX_HTML = r"""<!doctype html>
       stroke-width: 5px;
       stroke-linejoin: round;
     }
-    .graph-node circle {
+    .graph-node {
+      cursor: grab;
+    }
+    .graph-node.dragging {
+      cursor: grabbing;
+    }
+    .graph-node .graph-hit {
+      fill: transparent;
+      stroke: transparent;
+      stroke-width: 0;
+      filter: none;
+      pointer-events: all;
+    }
+    .graph-node .graph-halo {
+      stroke: none;
+      opacity: 0.13;
+      filter: none;
+    }
+    .graph-node .graph-core {
       fill: #ffffff;
       stroke-width: 2.4;
-      filter: drop-shadow(0 8px 12px rgba(30, 50, 75, 0.12));
+      filter: drop-shadow(0 10px 16px rgba(38, 48, 72, 0.16));
     }
-    .graph-node.active circle {
-      fill: #e8f3ff;
+    .graph-node.active .graph-halo {
+      opacity: 0.22;
+    }
+    .graph-node.active .graph-core {
+      fill: #eef6ff;
       stroke: var(--accent);
       stroke-width: 3;
     }
@@ -556,6 +583,10 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
       text-anchor: middle;
       pointer-events: none;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
     }
     @media (max-width: 820px) {
       .app { grid-template-columns: 1fr; }
@@ -641,25 +672,35 @@ INDEX_HTML = r"""<!doctype html>
       <section id="graphPanel" class="graph-panel hidden">
         <div class="graph-top">
           <div class="legend">
-            <span><i class="dot" style="background:#2563eb"></i>Note</span>
-            <span><i class="dot" style="background:#0f766e"></i>Profile</span>
-            <span><i class="dot" style="background:#b7791f"></i>Project</span>
-            <span><i class="dot" style="background:#8b5cf6"></i>Question</span>
+            <span><i class="dot" style="background:#5657d9"></i>Note</span>
+            <span><i class="dot" style="background:#087f7a"></i>Profile</span>
+            <span><i class="dot" style="background:#c47a00"></i>Project</span>
+            <span><i class="dot" style="background:#be4b74"></i>Question</span>
           </div>
           <div class="toolbar">
             <button type="button" id="backToEditorBtn">Editor</button>
             <button type="button" id="refreshGraphBtn">Refresh Graph</button>
+            <button type="button" id="resetGraphBtn">Reset Layout</button>
           </div>
         </div>
-        <div class="graph-shell">
-          <svg id="graphSvg" role="img" aria-label="Wiki page graph"></svg>
+        <div class="graph-shell" title="Drag nodes to arrange the graph. Click a node to edit its page.">
+          <svg id="graphSvg" role="img" aria-label="Wiki page graph" aria-description="Drag nodes to arrange the graph. Click a node to edit its page."></svg>
         </div>
         <div id="graphMessage" class="message"></div>
       </section>
     </main>
   </div>
   <script>
-    const state = { pages: [], activeId: "", graph: { nodes: [], links: [] } };
+    const graphPositionStoreKey = "nanobot_llm_wiki_graph_positions";
+    const state = {
+      pages: [],
+      activeId: "",
+      graph: { nodes: [], links: [] },
+      nodePositions: loadGraphPositions(),
+      drag: null,
+      suppressNodeClick: "",
+      graphSize: { width: 900, height: 560 }
+    };
     const svgNS = "http://www.w3.org/2000/svg";
     const $ = (id) => document.getElementById(id);
     const message = (text) => { $("message").textContent = text || ""; };
@@ -773,14 +814,103 @@ INDEX_HTML = r"""<!doctype html>
     }
     function nodeColor(node) {
       const value = `${node.page_type || ""} ${(node.tags || []).join(" ")}`.toLowerCase();
-      if (value.includes("profile") || value.includes("user")) return "#0f766e";
-      if (value.includes("project")) return "#b7791f";
-      if (value.includes("question")) return "#8b5cf6";
-      if (value.includes("inbox") || value.includes("history")) return "#64748b";
-      return "#2563eb";
+      if (value.includes("profile") || value.includes("user")) return "#087f7a";
+      if (value.includes("project")) return "#c47a00";
+      if (value.includes("question")) return "#be4b74";
+      if (value.includes("inbox") || value.includes("history")) return "#68758a";
+      return "#5657d9";
+    }
+    function loadGraphPositions() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(graphPositionStoreKey) || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+        return Object.fromEntries(Object.entries(parsed).filter(([_id, point]) => {
+          return point && Number.isFinite(point.x) && Number.isFinite(point.y);
+        }));
+      } catch (_error) {
+        return {};
+      }
+    }
+    function saveGraphPositions() {
+      try {
+        localStorage.setItem(graphPositionStoreKey, JSON.stringify(state.nodePositions));
+      } catch (_error) {}
+    }
+    function clearGraphPositions() {
+      try {
+        localStorage.removeItem(graphPositionStoreKey);
+      } catch (_error) {}
     }
     async function loadGraph() {
       state.graph = await api("/api/graph?limit=200");
+      renderGraph();
+    }
+    function graphPoint(event) {
+      const svg = $("graphSvg");
+      const rect = svg.getBoundingClientRect();
+      const viewBox = svg.viewBox.baseVal;
+      return {
+        x: viewBox.x + ((event.clientX - rect.left) * viewBox.width) / rect.width,
+        y: viewBox.y + ((event.clientY - rect.top) * viewBox.height) / rect.height
+      };
+    }
+    function clampGraphPoint(point) {
+      return {
+        x: Math.max(54, Math.min(state.graphSize.width - 54, point.x)),
+        y: Math.max(54, Math.min(state.graphSize.height - 70, point.y))
+      };
+    }
+    function defaultGraphPosition(index, count, width, height) {
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = Math.max(92, Math.min(width, height) * 0.34);
+      const angle = count === 1 ? -Math.PI / 2 : (Math.PI * 2 * index) / count - Math.PI / 2;
+      return {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius
+      };
+    }
+    function routeLink(from, to) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+      const offset = 38;
+      const startX = from.x + (dx / dist) * offset;
+      const startY = from.y + (dy / dist) * offset;
+      const endX = to.x - (dx / dist) * offset;
+      const endY = to.y - (dy / dist) * offset;
+      const curve = Math.min(54, dist * 0.18);
+      const midX = (startX + endX) / 2 - (dy / dist) * curve;
+      const midY = (startY + endY) / 2 + (dx / dist) * curve;
+      return { startX, startY, endX, endY, midX, midY };
+    }
+    function updateGraphGeometry() {
+      const svg = $("graphSvg");
+      const links = state.graph.links || [];
+      links.forEach((link, index) => {
+        const from = state.nodePositions[link.from_id];
+        const to = state.nodePositions[link.to_id];
+        if (!from || !to) return;
+        const route = routeLink(from, to);
+        const path = document.querySelector(`[data-link-path="${index}"]`);
+        const label = document.querySelector(`[data-link-label="${index}"]`);
+        if (path) path.setAttribute("d", `M ${route.startX} ${route.startY} Q ${route.midX} ${route.midY} ${route.endX} ${route.endY}`);
+        if (label) {
+          label.setAttribute("x", route.midX);
+          label.setAttribute("y", route.midY - 6);
+        }
+      });
+      (state.graph.nodes || []).forEach((node) => {
+        const pos = state.nodePositions[node.id];
+        const group = Array.from(svg.querySelectorAll("[data-node-id]")).find((item) => {
+          return item.dataset.nodeId === node.id;
+        });
+        if (group && pos) group.setAttribute("transform", `translate(${pos.x} ${pos.y})`);
+      });
+    }
+    function resetGraphLayout() {
+      state.nodePositions = {};
+      clearGraphPositions();
       renderGraph();
     }
     function renderGraph() {
@@ -789,6 +919,7 @@ INDEX_HTML = r"""<!doctype html>
       const width = Math.max(svg.clientWidth || 900, 640);
       const height = Math.max(svg.clientHeight || 560, 420);
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      state.graphSize = { width, height };
 
       const defs = svgEl("defs");
       const marker = svgEl("marker", {
@@ -800,7 +931,7 @@ INDEX_HTML = r"""<!doctype html>
         markerHeight: "6",
         orient: "auto-start-reverse"
       });
-      marker.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#8ca0b3" }));
+      marker.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#8a9ab0" }));
       defs.appendChild(marker);
       svg.appendChild(defs);
 
@@ -814,44 +945,32 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
 
-      const centerX = width / 2;
-      const centerY = height / 2;
-      const radius = Math.max(90, Math.min(width, height) * 0.34);
-      const positions = new Map();
       nodes.forEach((node, index) => {
-        const angle = nodes.length === 1 ? -Math.PI / 2 : (Math.PI * 2 * index) / nodes.length - Math.PI / 2;
-        positions.set(node.id, {
-          x: centerX + Math.cos(angle) * radius,
-          y: centerY + Math.sin(angle) * radius
-        });
+        if (!state.nodePositions[node.id]) {
+          state.nodePositions[node.id] = defaultGraphPosition(index, nodes.length, width, height);
+        } else {
+          state.nodePositions[node.id] = clampGraphPoint(state.nodePositions[node.id]);
+        }
       });
 
-      links.forEach((link) => {
-        const from = positions.get(link.from_id);
-        const to = positions.get(link.to_id);
+      links.forEach((link, index) => {
+        const from = state.nodePositions[link.from_id];
+        const to = state.nodePositions[link.to_id];
         if (!from || !to) return;
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-        const offset = 36;
-        const startX = from.x + (dx / dist) * offset;
-        const startY = from.y + (dy / dist) * offset;
-        const endX = to.x - (dx / dist) * offset;
-        const endY = to.y - (dy / dist) * offset;
-        const curve = Math.min(48, dist * 0.18);
-        const midX = (startX + endX) / 2 - (dy / dist) * curve;
-        const midY = (startY + endY) / 2 + (dx / dist) * curve;
+        const route = routeLink(from, to);
         const path = svgEl("path", {
           class: "graph-link",
-          d: `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`,
+          d: `M ${route.startX} ${route.startY} Q ${route.midX} ${route.midY} ${route.endX} ${route.endY}`,
+          "data-link-path": index,
           "marker-end": "url(#arrow)"
         });
         svg.appendChild(path);
 
         const label = svgEl("text", {
           class: "graph-relation",
-          x: midX,
-          y: midY - 6,
+          x: route.midX,
+          y: route.midY - 6,
+          "data-link-label": index,
           "text-anchor": "middle"
         });
         label.textContent = trimLabel(link.relation, 18);
@@ -859,22 +978,104 @@ INDEX_HTML = r"""<!doctype html>
       });
 
       nodes.forEach((node) => {
-        const pos = positions.get(node.id);
-        const group = svgEl("g", { class: "graph-node" + (node.id === state.activeId ? " active" : "") });
+        const pos = state.nodePositions[node.id];
+        const group = svgEl("g", {
+          class: "graph-node" + (node.id === state.activeId ? " active" : ""),
+          "data-node-id": node.id,
+          transform: `translate(${pos.x} ${pos.y})`
+        });
         group.setAttribute("tabindex", "0");
-        group.style.cursor = "pointer";
-        group.addEventListener("click", () => loadPage(node.id));
+        group.style.cursor = "grab";
+        group.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          const start = graphPoint(event);
+          const current = state.nodePositions[node.id];
+          state.drag = {
+            id: node.id,
+            pointerId: event.pointerId,
+            offsetX: current.x - start.x,
+            offsetY: current.y - start.y,
+            moved: false
+          };
+          group.classList.add("dragging");
+          try { group.setPointerCapture(event.pointerId); } catch (_error) {}
+        });
+        group.addEventListener("pointermove", (event) => {
+          if (!state.drag || state.drag.id !== node.id) return;
+          const point = graphPoint(event);
+          const next = clampGraphPoint({
+            x: point.x + state.drag.offsetX,
+            y: point.y + state.drag.offsetY
+          });
+          const previous = state.nodePositions[node.id];
+          if (Math.abs(next.x - previous.x) > 1 || Math.abs(next.y - previous.y) > 1) {
+            state.drag.moved = true;
+          }
+          state.nodePositions[node.id] = next;
+          updateGraphGeometry();
+        });
+        group.addEventListener("pointerup", (event) => {
+          if (state.drag && state.drag.id === node.id) {
+            if (state.drag.moved) state.suppressNodeClick = node.id;
+            if (state.drag.moved) saveGraphPositions();
+            state.drag = null;
+          }
+          group.classList.remove("dragging");
+          try { group.releasePointerCapture(event.pointerId); } catch (_error) {}
+        });
+        group.addEventListener("pointercancel", () => {
+          state.drag = null;
+          group.classList.remove("dragging");
+        });
+        group.addEventListener("click", () => {
+          if (state.suppressNodeClick === node.id) {
+            state.suppressNodeClick = "";
+            return;
+          }
+          loadPage(node.id);
+        });
         group.addEventListener("keydown", (event) => {
           if (event.key === "Enter") loadPage(node.id);
+          const nudges = {
+            ArrowUp: { x: 0, y: -1 },
+            ArrowDown: { x: 0, y: 1 },
+            ArrowLeft: { x: -1, y: 0 },
+            ArrowRight: { x: 1, y: 0 }
+          };
+          const nudge = nudges[event.key];
+          if (!nudge) return;
+          event.preventDefault();
+          const step = event.shiftKey ? 48 : 18;
+          const current = state.nodePositions[node.id];
+          state.nodePositions[node.id] = clampGraphPoint({
+            x: current.x + nudge.x * step,
+            y: current.y + nudge.y * step
+          });
+          updateGraphGeometry();
+          saveGraphPositions();
         });
         group.appendChild(svgEl("circle", {
-          cx: pos.x,
-          cy: pos.y,
+          class: "graph-hit",
+          cx: 0,
+          cy: 0,
+          r: 52
+        }));
+        group.appendChild(svgEl("circle", {
+          class: "graph-halo",
+          cx: 0,
+          cy: 0,
+          r: 40,
+          fill: nodeColor(node)
+        }));
+        group.appendChild(svgEl("circle", {
+          class: "graph-core",
+          cx: 0,
+          cy: 0,
           r: 32,
           fill: "#ffffff",
           stroke: nodeColor(node)
         }));
-        const title = svgEl("text", { x: pos.x, y: pos.y + 46 });
+        const title = svgEl("text", { x: 0, y: 48 });
         title.textContent = trimLabel(node.title);
         group.appendChild(title);
         svg.appendChild(group);
@@ -888,6 +1089,7 @@ INDEX_HTML = r"""<!doctype html>
     $("graphTab").addEventListener("click", showGraph);
     $("refreshBtn").addEventListener("click", loadPages);
     $("refreshGraphBtn").addEventListener("click", () => loadGraph().catch((error) => graphMessage(error.message)));
+    $("resetGraphBtn").addEventListener("click", resetGraphLayout);
     $("backToEditorBtn").addEventListener("click", showEditor);
     $("searchBtn").addEventListener("click", searchPages);
     $("searchInput").addEventListener("keydown", (event) => {
