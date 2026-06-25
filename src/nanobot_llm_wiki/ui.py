@@ -223,14 +223,18 @@ INDEX_HTML = r"""<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f7f9;
+      --bg: #f4f6f8;
       --panel: #ffffff;
-      --line: #d8dde6;
-      --text: #172033;
-      --muted: #677085;
+      --panel-soft: #f9fbfc;
+      --line: #d9e0e7;
+      --line-strong: #c5ced8;
+      --text: #182131;
+      --muted: #667085;
       --accent: #0f766e;
       --accent-2: #2563eb;
+      --accent-3: #b7791f;
       --danger: #b42318;
+      --shadow: 0 18px 42px rgba(25, 35, 50, 0.08);
     }
     * { box-sizing: border-box; }
     body {
@@ -249,8 +253,18 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--panel);
       color: var(--text);
       border-radius: 6px;
-      padding: 8px 10px;
+      min-height: 36px;
+      padding: 8px 11px;
       cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+      white-space: nowrap;
+    }
+    button:hover {
+      border-color: var(--line-strong);
+      background: #f8fafc;
+    }
+    button:active {
+      transform: translateY(1px);
     }
     button.primary {
       border-color: var(--accent);
@@ -267,51 +281,88 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 6px;
       background: white;
       color: var(--text);
-      padding: 9px 10px;
+      padding: 10px 11px;
+      outline: none;
+    }
+    input:focus, textarea:focus {
+      border-color: var(--accent-2);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
     }
     textarea {
-      min-height: 360px;
+      min-height: 430px;
       resize: vertical;
       line-height: 1.45;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
     }
     .app {
       display: grid;
-      grid-template-columns: 320px 1fr;
+      grid-template-columns: 360px 1fr;
       min-height: 100vh;
     }
     aside {
       border-right: 1px solid var(--line);
-      background: #eef2f5;
-      padding: 14px;
+      background: #fbfcfd;
+      padding: 16px;
       min-width: 0;
     }
     main {
-      padding: 18px;
+      padding: 24px;
       min-width: 0;
     }
     .top {
       display: flex;
       gap: 8px;
-      align-items: center;
-      margin-bottom: 12px;
+      align-items: flex-start;
+      margin-bottom: 14px;
     }
     .brand {
       font-weight: 700;
-      font-size: 18px;
+      font-size: 19px;
       flex: 1;
+      line-height: 1.2;
+    }
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      margin-top: 3px;
+    }
+    .side-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
     }
     .search {
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 8px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
+    }
+    .status {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 10px 0 14px;
+      overflow-wrap: anywhere;
+    }
+    .status span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f7fafc;
+      padding: 3px 8px;
     }
     .list {
       display: grid;
-      gap: 8px;
-      max-height: calc(100vh - 128px);
+      gap: 7px;
+      max-height: calc(100vh - 150px);
       overflow: auto;
+      padding-right: 2px;
     }
     .item {
       display: block;
@@ -319,36 +370,97 @@ INDEX_HTML = r"""<!doctype html>
       text-align: left;
       background: white;
       border-radius: 8px;
-      padding: 10px;
+      padding: 11px 12px;
+      border-color: transparent;
+      box-shadow: 0 1px 2px rgba(20, 30, 45, 0.04);
     }
     .item.active {
       border-color: var(--accent-2);
-      box-shadow: inset 3px 0 0 var(--accent-2);
+      box-shadow: inset 3px 0 0 var(--accent-2), 0 8px 18px rgba(37, 99, 235, 0.08);
     }
     .item-title {
       font-weight: 650;
       overflow-wrap: anywhere;
     }
-    .item-meta, .status {
+    .item-meta {
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
       margin-top: 4px;
       overflow-wrap: anywhere;
+    }
+    .item-tags {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-top: 7px;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      border-radius: 999px;
+      background: #eef7f6;
+      color: #0b5c55;
+      font-size: 11px;
+      padding: 2px 7px;
+    }
+    .workbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+      max-width: 1120px;
+    }
+    .view-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+    .view-subtitle {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .view-switch {
+      display: inline-flex;
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #eef2f5;
+      padding: 3px;
+    }
+    .view-switch button {
+      min-height: 30px;
+      border: 0;
+      background: transparent;
+      padding: 5px 10px;
+    }
+    .view-switch button.active {
+      background: white;
+      box-shadow: 0 1px 2px rgba(20, 30, 45, 0.08);
     }
     .editor {
       display: grid;
       gap: 12px;
       max-width: 1040px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: 16px;
     }
     .row {
       display: grid;
-      grid-template-columns: 1fr 160px;
-      gap: 10px;
+      grid-template-columns: minmax(0, 1fr) 180px;
+      gap: 12px;
     }
     .toolbar {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      align-items: center;
     }
     .field label {
       display: block;
@@ -368,12 +480,46 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 12px;
       max-width: 1120px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .graph-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
     }
     .graph-shell {
       min-height: 560px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: white;
+      background:
+        linear-gradient(#eef3f8 1px, transparent 1px),
+        linear-gradient(90deg, #eef3f8 1px, transparent 1px),
+        #fbfdff;
+      background-size: 24px 24px;
       overflow: hidden;
     }
     #graphSvg {
@@ -382,8 +528,10 @@ INDEX_HTML = r"""<!doctype html>
       height: 560px;
     }
     .graph-link {
-      stroke: #8ca0b3;
-      stroke-width: 1.5;
+      fill: none;
+      stroke: #8799ad;
+      stroke-width: 1.7;
+      opacity: 0.82;
     }
     .graph-relation {
       fill: var(--muted);
@@ -394,9 +542,9 @@ INDEX_HTML = r"""<!doctype html>
       stroke-linejoin: round;
     }
     .graph-node circle {
-      fill: #f8fbff;
-      stroke: var(--accent-2);
-      stroke-width: 2;
+      fill: #ffffff;
+      stroke-width: 2.4;
+      filter: drop-shadow(0 8px 12px rgba(30, 50, 75, 0.12));
     }
     .graph-node.active circle {
       fill: #e8f3ff;
@@ -412,8 +560,9 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 820px) {
       .app { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      .list { max-height: 260px; }
+      .list { max-height: 340px; }
       .row { grid-template-columns: 1fr; }
+      .workbar { display: grid; }
     }
   </style>
 </head>
@@ -421,9 +570,11 @@ INDEX_HTML = r"""<!doctype html>
   <div class="app">
     <aside>
       <div class="top">
-        <div class="brand">NanoBot LLM Wiki</div>
-        <button id="newBtn" title="New page">+</button>
-        <button id="graphBtn" title="Graph view">Graph</button>
+        <div class="brand">NanoBot LLM Wiki<div class="brand-subtitle">Local memory pages and graph</div></div>
+        <div class="side-actions">
+          <button id="newBtn" title="New page">New</button>
+          <button id="graphBtn" title="Graph view">Graph</button>
+        </div>
       </div>
       <div class="search">
         <input id="searchInput" placeholder="Search pages">
@@ -433,6 +584,16 @@ INDEX_HTML = r"""<!doctype html>
       <div id="pageList" class="list"></div>
     </aside>
     <main>
+      <div class="workbar">
+        <div>
+          <h1 id="viewTitle" class="view-title">Memory Pages</h1>
+          <div id="viewSubtitle" class="view-subtitle">Browse, connect, and refine durable NanoBot memory.</div>
+        </div>
+        <div class="view-switch">
+          <button type="button" id="editorTab" class="active">Editor</button>
+          <button type="button" id="graphTab">Graph</button>
+        </div>
+      </div>
       <form id="editor" class="editor">
         <input type="hidden" id="pageId">
         <div class="row">
@@ -478,9 +639,17 @@ INDEX_HTML = r"""<!doctype html>
         <div id="message" class="message"></div>
       </form>
       <section id="graphPanel" class="graph-panel hidden">
-        <div class="toolbar">
-          <button type="button" id="backToEditorBtn">Editor</button>
-          <button type="button" id="refreshGraphBtn">Refresh Graph</button>
+        <div class="graph-top">
+          <div class="legend">
+            <span><i class="dot" style="background:#2563eb"></i>Note</span>
+            <span><i class="dot" style="background:#0f766e"></i>Profile</span>
+            <span><i class="dot" style="background:#b7791f"></i>Project</span>
+            <span><i class="dot" style="background:#8b5cf6"></i>Question</span>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="backToEditorBtn">Editor</button>
+            <button type="button" id="refreshGraphBtn">Refresh Graph</button>
+          </div>
         </div>
         <div class="graph-shell">
           <svg id="graphSvg" role="img" aria-label="Wiki page graph"></svg>
@@ -513,13 +682,24 @@ INDEX_HTML = r"""<!doctype html>
       if (!res.ok) throw new Error(data.error || "Request failed");
       return data;
     }
+    function setView(mode) {
+      $("editorTab").classList.toggle("active", mode === "editor");
+      $("graphTab").classList.toggle("active", mode === "graph");
+    }
     function showEditor() {
       $("editor").classList.remove("hidden");
       $("graphPanel").classList.add("hidden");
+      setView("editor");
+      const title = $("title").value || "Memory Pages";
+      $("viewTitle").textContent = title;
+      $("viewSubtitle").textContent = $("pageId").value ? `Editing ${$("pageId").value}` : "Create or refine a Wiki memory page.";
     }
     function showGraph() {
       $("editor").classList.add("hidden");
       $("graphPanel").classList.remove("hidden");
+      setView("graph");
+      $("viewTitle").textContent = "Memory Graph";
+      $("viewSubtitle").textContent = "Pages are nodes. Links are typed relationships.";
       loadGraph().catch((error) => graphMessage(error.message));
     }
     function renderList(pages) {
@@ -529,9 +709,16 @@ INDEX_HTML = r"""<!doctype html>
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "item" + (page.id === state.activeId ? " active" : "");
-        btn.innerHTML = `<div class="item-title"></div><div class="item-meta"></div>`;
+        btn.innerHTML = `<div class="item-title"></div><div class="item-meta"></div><div class="item-tags"></div>`;
         btn.querySelector(".item-title").textContent = page.title;
-        btn.querySelector(".item-meta").textContent = `${page.page_type} · ${page.tags.join(", ") || "untagged"}`;
+        btn.querySelector(".item-meta").textContent = `${page.page_type} · ${page.id}`;
+        const tags = btn.querySelector(".item-tags");
+        (page.tags && page.tags.length ? page.tags : ["untagged"]).slice(0, 4).forEach((tag) => {
+          const chip = document.createElement("span");
+          chip.className = "tag";
+          chip.textContent = tag;
+          tags.appendChild(chip);
+        });
         btn.addEventListener("click", () => loadPage(page.id));
         $("pageList").appendChild(btn);
       });
@@ -547,10 +734,16 @@ INDEX_HTML = r"""<!doctype html>
       $("linkTarget").value = "";
       $("linkRelation").value = "related";
       renderList(state.pages);
+      showEditor();
     }
     async function loadStatus() {
       const status = await api("/api/status");
-      $("status").textContent = `${status.pages} pages · cursor ${status.cursor}`;
+      $("status").innerHTML = "";
+      [["Pages", status.pages], ["Links", status.links], ["Cursor", status.cursor]].forEach(([label, value]) => {
+        const item = document.createElement("span");
+        item.textContent = `${label}: ${value}`;
+        $("status").appendChild(item);
+      });
     }
     async function loadPages() {
       const data = await api("/api/pages?limit=200");
@@ -577,6 +770,14 @@ INDEX_HTML = r"""<!doctype html>
     }
     function trimLabel(text, max = 24) {
       return text.length > max ? text.slice(0, max - 1) + "…" : text;
+    }
+    function nodeColor(node) {
+      const value = `${node.page_type || ""} ${(node.tags || []).join(" ")}`.toLowerCase();
+      if (value.includes("profile") || value.includes("user")) return "#0f766e";
+      if (value.includes("project")) return "#b7791f";
+      if (value.includes("question")) return "#8b5cf6";
+      if (value.includes("inbox") || value.includes("history")) return "#64748b";
+      return "#2563eb";
     }
     async function loadGraph() {
       state.graph = await api("/api/graph?limit=200");
@@ -629,20 +830,28 @@ INDEX_HTML = r"""<!doctype html>
         const from = positions.get(link.from_id);
         const to = positions.get(link.to_id);
         if (!from || !to) return;
-        const line = svgEl("line", {
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+        const offset = 36;
+        const startX = from.x + (dx / dist) * offset;
+        const startY = from.y + (dy / dist) * offset;
+        const endX = to.x - (dx / dist) * offset;
+        const endY = to.y - (dy / dist) * offset;
+        const curve = Math.min(48, dist * 0.18);
+        const midX = (startX + endX) / 2 - (dy / dist) * curve;
+        const midY = (startY + endY) / 2 + (dx / dist) * curve;
+        const path = svgEl("path", {
           class: "graph-link",
-          x1: from.x,
-          y1: from.y,
-          x2: to.x,
-          y2: to.y,
+          d: `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`,
           "marker-end": "url(#arrow)"
         });
-        svg.appendChild(line);
+        svg.appendChild(path);
 
         const label = svgEl("text", {
           class: "graph-relation",
-          x: (from.x + to.x) / 2,
-          y: (from.y + to.y) / 2 - 6,
+          x: midX,
+          y: midY - 6,
           "text-anchor": "middle"
         });
         label.textContent = trimLabel(link.relation, 18);
@@ -658,7 +867,13 @@ INDEX_HTML = r"""<!doctype html>
         group.addEventListener("keydown", (event) => {
           if (event.key === "Enter") loadPage(node.id);
         });
-        group.appendChild(svgEl("circle", { cx: pos.x, cy: pos.y, r: 30 }));
+        group.appendChild(svgEl("circle", {
+          cx: pos.x,
+          cy: pos.y,
+          r: 32,
+          fill: "#ffffff",
+          stroke: nodeColor(node)
+        }));
         const title = svgEl("text", { x: pos.x, y: pos.y + 46 });
         title.textContent = trimLabel(node.title);
         group.appendChild(title);
@@ -669,6 +884,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     $("newBtn").addEventListener("click", () => fillEditor({ title: "", page_type: "note", tags: [], aliases: [], content: "" }));
     $("graphBtn").addEventListener("click", showGraph);
+    $("editorTab").addEventListener("click", showEditor);
+    $("graphTab").addEventListener("click", showGraph);
     $("refreshBtn").addEventListener("click", loadPages);
     $("refreshGraphBtn").addEventListener("click", () => loadGraph().catch((error) => graphMessage(error.message)));
     $("backToEditorBtn").addEventListener("click", showEditor);
