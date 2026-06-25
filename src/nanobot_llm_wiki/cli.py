@@ -11,6 +11,7 @@ from nanobot_llm_wiki.formatting import format_page, format_search_results, form
 from nanobot_llm_wiki.installer import install_workspace
 from nanobot_llm_wiki.paths import default_workspace
 from nanobot_llm_wiki.storage import WikiStore
+from nanobot_llm_wiki.ui import run_ui
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     dream = sub.add_parser("dream", help="Import new memory/history.jsonl entries.")
     dream.add_argument("--once", action="store_true", help="Run one deterministic ingestion pass.")
     dream.add_argument("--limit", type=int, default=50)
+
+    ui = sub.add_parser("ui", help="Start the local Wiki management page.")
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--port", type=int, default=8766)
+    ui.add_argument("--open", action="store_true", help="Open the page in the default browser.")
 
     return parser
 
@@ -105,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
         result = store.ingest_history(limit=args.limit)
         store.write_memory_bridge()
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "ui":
+        run_ui(workspace, host=args.host, port=args.port, open_browser=args.open)
         return 0
 
     parser.error(f"unknown command: {args.command}")

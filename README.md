@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scri
 
 ```text
 ~/.nanobot/workspace/
-    memory/
+  memory/
     MEMORY.md                  # bridge block pointing NanoBot at the Wiki
     wiki/
       wiki.db                  # SQLite search/index database
@@ -62,7 +62,14 @@ nanobot-wiki search "project preference"
 nanobot-wiki read "User Profile"
 nanobot-wiki upsert "Current Project" --content "Building a NanoBot memory plugin."
 nanobot-wiki dream --once
+nanobot-wiki ui
 nanobot-wiki doctor
+```
+
+The local UI listens on [http://127.0.0.1:8766](http://127.0.0.1:8766) by default:
+
+```bash
+nanobot-wiki ui --workspace ~/.nanobot/workspace
 ```
 
 `dream --once` consumes new entries from `memory/history.jsonl` into a `Conversation Inbox` page. It is deterministic in this first release so it can run without API keys. The intended next step is a NanoBot core `memory_processors` extension point that lets this package replace or augment Dream with an LLM-driven Wiki maintainer.
