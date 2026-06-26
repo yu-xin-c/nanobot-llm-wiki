@@ -42,6 +42,31 @@ def test_upsert_search_read_and_forget(tmp_path) -> None:
     assert list(store.archive_dir.glob("project-memory-*.md"))
 
 
+def test_recall_uses_aliases_precise_tokens_and_deletion_cleanup(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(
+        title="General Codex Notes",
+        content="Codex is used for NanoBot plugin development.",
+        tags=["codex"],
+    )
+    target = store.upsert_page(
+        title="Conversation Memory Probe",
+        content="A temporary memory with exact token codex-dialogue-memory-43827.",
+        tags=["codex-test", "delete-test"],
+        aliases=["dialogue recall probe"],
+    )
+
+    assert store.search("dialogue recall probe")[0].page.id == target.id
+    assert store.search("codex-dialogue-memory-43827")[0].page.id == target.id
+    assert store.search("memory", tag="delete-test")[0].page.id == target.id
+
+    forgotten = store.forget_page("dialogue recall probe", archive=False)
+    assert forgotten.id == target.id
+    assert store.search("codex-dialogue-memory-43827") == []
+    assert store.search("memory", tag="delete-test") == []
+    assert store.get_page("dialogue recall probe") is None
+
+
 def test_history_ingestion_and_bridge(tmp_path) -> None:
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir()
@@ -108,3 +133,16 @@ def test_skill_writer_does_not_overwrite_user_skill(tmp_path) -> None:
 
     store.write_skill(force=True)
     assert "wiki_search" in skill_path.read_text(encoding="utf-8")
+
+
+def test_memory_bridge_includes_recent_graph_links(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(title="User Profile", content="User facts.")
+    store.upsert_page(title="NanoBot Project", content="Project facts.")
+    store.link_pages("User Profile", "NanoBot Project", "working_on")
+
+    memory_path = store.write_memory_bridge()
+    text = memory_path.read_text(encoding="utf-8")
+
+    assert "### Recent Wiki Links" in text
+    assert "[[User Profile]] -working_on-> [[NanoBot Project]]" in text

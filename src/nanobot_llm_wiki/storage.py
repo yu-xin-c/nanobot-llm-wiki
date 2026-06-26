@@ -344,9 +344,15 @@ class WikiStore:
 
     def _upsert_fts(self, conn: sqlite3.Connection, page: WikiPage) -> None:
         conn.execute("DELETE FROM page_fts WHERE page_id = ?", (page.id,))
+        alias_text = " ".join(page.aliases)
         conn.execute(
             "INSERT INTO page_fts(page_id, title, content, tags) VALUES (?, ?, ?, ?)",
-            (page.id, page.title, page.content, " ".join(page.tags)),
+            (
+                page.id,
+                page.title,
+                "\n".join(part for part in [page.content, alias_text] if part),
+                " ".join([*page.tags, *page.aliases]),
+            ),
         )
 
     def search(self, query: str, *, limit: int = 5, tag: str | None = None) -> list[SearchResult]:
@@ -357,57 +363,106 @@ class WikiStore:
             pages = self.list_pages(limit=limit)
             return [SearchResult(page=page, score=0.0) for page in self._filter_tag(pages, tag_filter)]
 
-        fts_query = self._to_fts_query(query)
-        try:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT p.*, bm25(page_fts) AS score
-                    FROM page_fts
-                    JOIN pages p ON p.id = page_fts.page_id
-                    WHERE page_fts MATCH ?
-                    ORDER BY score
-                    LIMIT ?
-                    """,
-                    (fts_query, limit * 4),
-                ).fetchall()
-            results = [
-                SearchResult(page=WikiPage.from_row(row), score=float(row["score"]))
-                for row in rows
-            ]
-        except sqlite3.Error:
-            results = self._like_search(query, limit * 4)
+        candidates: list[SearchResult] = []
+        exact_page = self.get_page(query)
+        if exact_page:
+            candidates.append(SearchResult(page=exact_page, score=-100.0))
 
-        filtered = [
-            result for result in results if self._page_has_tag(result.page, tag_filter)
-        ]
-        if not filtered:
-            filtered = [
-                result for result in self._like_search(query, limit * 4)
-                if self._page_has_tag(result.page, tag_filter)
-            ]
-        return filtered[:limit]
+        candidates.extend(self._like_search(query, limit * 4, score=0.25))
+        terms = self._query_terms(query)
+        try:
+            candidates.extend(self._fts_search(self._to_fts_query(terms, operator="AND"), limit * 4))
+            if self._should_expand_query(query, terms):
+                candidates.extend(self._fts_search(self._to_fts_query(terms, operator="OR"), limit * 4))
+        except sqlite3.Error:
+            pass
+
+        return self._merge_search_results(candidates, tag_filter=tag_filter)[:limit]
 
     @staticmethod
-    def _to_fts_query(query: str) -> str:
+    def _query_terms(query: str) -> list[str]:
         terms = re.findall(r"[\w\u4e00-\u9fff]+", query, flags=re.UNICODE)
-        if not terms:
-            return json.dumps(query)
-        return " OR ".join(json.dumps(term) for term in terms[:8])
+        return terms[:8]
 
-    def _like_search(self, query: str, limit: int) -> list[SearchResult]:
-        pattern = f"%{query}%"
+    @staticmethod
+    def _to_fts_query(terms: list[str], *, operator: str) -> str:
+        if not terms:
+            return ""
+        joiner = f" {operator} "
+        return joiner.join(json.dumps(term) for term in terms)
+
+    @staticmethod
+    def _should_expand_query(query: str, terms: list[str]) -> bool:
+        if len(terms) < 2:
+            return False
+        if len(terms) > 3:
+            return False
+        if any(any(char.isdigit() for char in term) for term in terms):
+            return False
+        return re.search(r"[-_:/\\]", query) is None
+
+    def _fts_search(self, fts_query: str, limit: int) -> list[SearchResult]:
+        if not fts_query:
+            return []
         with self._connect() as conn:
             rows = conn.execute(
                 """
+                SELECT p.*, bm25(page_fts) AS score
+                FROM page_fts
+                JOIN pages p ON p.id = page_fts.page_id
+                WHERE page_fts MATCH ?
+                ORDER BY score
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
+        return [
+            SearchResult(page=WikiPage.from_row(row), score=float(row["score"]))
+            for row in rows
+        ]
+
+    def _merge_search_results(
+        self,
+        results: Iterable[SearchResult],
+        *,
+        tag_filter: str,
+    ) -> list[SearchResult]:
+        merged: dict[str, SearchResult] = {}
+        for result in results:
+            if not self._page_has_tag(result.page, tag_filter):
+                continue
+            existing = merged.get(result.page.id)
+            if existing is None or result.score < existing.score:
+                merged[result.page.id] = result
+        return sorted(merged.values(), key=lambda result: result.score)
+
+    def _like_search(self, query: str, limit: int, *, score: float = 1.0) -> list[SearchResult]:
+        query = query.strip()
+        if not query:
+            return []
+        pattern = f"%{query}%"
+        terms = self._query_terms(query)
+        term_clauses: list[str] = []
+        values: list[Any] = [pattern, pattern, pattern, pattern]
+        for term in terms:
+            term_pattern = f"%{term}%"
+            term_clauses.append("(title LIKE ? OR content LIKE ? OR tags_json LIKE ? OR aliases_json LIKE ?)")
+            values.extend([term_pattern, term_pattern, term_pattern, term_pattern])
+        where = "(title LIKE ? OR content LIKE ? OR tags_json LIKE ? OR aliases_json LIKE ?)"
+        if term_clauses:
+            where = f"({where}) OR ({' AND '.join(term_clauses)})"
+        values.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
                 SELECT * FROM pages
-                WHERE title LIKE ? OR content LIKE ? OR tags_json LIKE ? OR aliases_json LIKE ?
+                WHERE {where}
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
-                (pattern, pattern, pattern, pattern, limit),
+                tuple(values),
             ).fetchall()
-        return [SearchResult(page=WikiPage.from_row(row), score=1.0) for row in rows]
+        return [SearchResult(page=WikiPage.from_row(row), score=score) for row in rows]
 
     @staticmethod
     def _filter_tag(pages: list[WikiPage], tag_filter: str) -> list[WikiPage]:
@@ -577,7 +632,7 @@ class WikiStore:
             return value
         return value[: limit - 1].rstrip() + "…"
 
-    def write_memory_bridge(self, *, limit: int = 8) -> Path:
+    def write_memory_bridge(self, *, limit: int = 8, link_limit: int = 8) -> Path:
         memory_dir = self.workspace / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
         memory_path = memory_dir / "MEMORY.md"
@@ -587,6 +642,16 @@ class WikiStore:
             if pages
             else "- No Wiki pages yet."
         )
+        links = self.list_links()
+        recent_links = list(reversed(links[-max(1, link_limit):]))
+        link_lines = (
+            "\n".join(
+                f"- [[{link.from_title}]] -{link.relation}-> [[{link.to_title}]]"
+                for link in recent_links
+            )
+            if recent_links
+            else "- No Wiki links yet."
+        )
         block = (
             f"{BRIDGE_START}\n"
             "## LLM Wiki Memory\n\n"
@@ -594,6 +659,8 @@ class WikiStore:
             "Use `wiki_search` for broad recall and `wiki_read` for exact page context before relying on old facts.\n\n"
             "### Active Wiki Pages\n"
             f"{page_lines}\n"
+            "\n### Recent Wiki Links\n"
+            f"{link_lines}\n"
             f"{BRIDGE_END}"
         )
         existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""

@@ -53,6 +53,14 @@ curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scri
 - `wiki_forget(selector, archive)` deletes or archives a page.
 - `wiki_status()` reports storage paths and counts.
 
+## Memory Strategy
+
+- Write durable facts as small pages with stable titles, tags, and aliases. Use `mode="append"` for incremental facts and `mode="replace"` for corrected summaries.
+- Recall uses exact page/alias matching first, then precise full-text search, then substring fallback. Hyphenated or numbered test tokens stay precise so deletion checks do not match unrelated partial terms.
+- Use `wiki_read` after `wiki_search` before relying on an old fact; search results are previews, not authoritative context.
+- Connect pages with `wiki_link` when the relationship matters. The `MEMORY.md` bridge includes recent graph links so NanoBot can see both active pages and their structure.
+- `wiki_forget` removes the page from SQLite, full-text search, and graph links. With the default `archive=true`, the Markdown page is moved to `memory/wiki/archive/` for auditability.
+
 ## CLI
 
 ```bash
