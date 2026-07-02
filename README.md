@@ -1,12 +1,82 @@
 # NanoBot LLM Wiki
 
-`nanobot-llm-wiki` turns NanoBot's long-term memory into a local, inspectable Wiki made of Markdown pages and a SQLite index.
+`nanobot-llm-wiki` is a deployable long-term memory plugin for
+[NanoBot](https://github.com/HKUDS/nanobot). It turns durable memory into a local Wiki:
+Markdown pages for humans, SQLite for search, and typed graph links for structure.
 
-The first release is intentionally boring to deploy: no Postgres, no vector database, no external service. It installs NanoBot tools, initializes `memory/wiki/`, adds a workspace skill, and writes a small `memory/MEMORY.md` bridge so NanoBot knows to use the Wiki.
+The project is intentionally simple to deploy. It does not require Postgres, a vector
+database, Redis, Docker, or an external hosted service.
 
-## Install From GitHub
+## Can Someone Deploy This With One Command?
 
-NanoBot discovers tool plugins from the same Python environment it runs in. If you run NanoBot through `uv tool`, install NanoBot with this plugin attached:
+Yes, for the plugin bootstrap:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh | bash
+```
+
+This command installs NanoBot with the plugin attached and initializes the Wiki workspace.
+After that, start NanoBot normally:
+
+```bash
+nanobot gateway
+```
+
+What the one-command installer does:
+
+- Installs `nanobot-ai` with this plugin attached via `uv tool install --with`.
+- Creates `~/.nanobot/workspace/memory/wiki/`.
+- Seeds starter Wiki pages: `User Profile`, `Projects`, and `Open Questions`.
+- Writes the generated always-on skill at `~/.nanobot/workspace/skills/llm-wiki/SKILL.md`.
+- Writes a `memory/MEMORY.md` bridge so NanoBot knows when to use Wiki tools.
+- Registers these NanoBot tools through Python entry points: `wiki_search`, `wiki_read`,
+  `wiki_upsert`, `wiki_link`, `wiki_forget`, and `wiki_status`.
+
+What it does not do:
+
+- It does not create or configure your LLM provider API key.
+- It does not overwrite a custom `config.json`.
+- It does not start a background UI service by itself.
+- It does not replace NanoBot core memory internals; it adds a tool-based Wiki memory layer.
+
+## Prerequisites
+
+- Python 3.11 or newer.
+- [`uv`](https://docs.astral.sh/uv/) installed and available on `PATH`.
+- A working NanoBot config at `~/.nanobot/config.json` with an LLM provider configured.
+
+To install `uv`:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+## Install Options
+
+### Option A: One-command installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh | bash
+nanobot gateway
+```
+
+Use a custom workspace:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh \
+  | NANOBOT_WORKSPACE=/path/to/workspace bash
+```
+
+Use a fork or another repo URL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh \
+  | NANOBOT_LLM_WIKI_REPO=https://github.com/your-name/nanobot-llm-wiki bash
+```
+
+### Option B: `uv tool` install
+
+Use this when NanoBot itself is managed by `uv tool`:
 
 ```bash
 uv tool install --force --with git+https://github.com/yu-xin-c/nanobot-llm-wiki nanobot-ai
@@ -14,7 +84,7 @@ uvx --from git+https://github.com/yu-xin-c/nanobot-llm-wiki nanobot-wiki install
 nanobot gateway
 ```
 
-For a virtualenv or source checkout:
+### Option C: virtualenv or source checkout
 
 ```bash
 python -m pip install git+https://github.com/yu-xin-c/nanobot-llm-wiki
@@ -22,10 +92,45 @@ nanobot-wiki install --workspace ~/.nanobot/workspace
 nanobot gateway
 ```
 
-There is also a helper script:
+For local development:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh | bash
+git clone https://github.com/yu-xin-c/nanobot-llm-wiki
+cd nanobot-llm-wiki
+uv sync --extra dev
+uv run nanobot-wiki install --workspace ~/.nanobot/workspace
+```
+
+## Verify The Install
+
+Check storage paths and counts:
+
+```bash
+nanobot-wiki status
+```
+
+Search the seeded pages:
+
+```bash
+nanobot-wiki search "Projects"
+```
+
+Start the local Wiki UI:
+
+```bash
+nanobot-wiki ui --workspace ~/.nanobot/workspace
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8766
+```
+
+When NanoBot starts with `-v`, logs should include the Wiki tools:
+
+```text
+wiki_forget, wiki_link, wiki_read, wiki_search, wiki_status, wiki_upsert
 ```
 
 ## What Gets Installed
@@ -44,22 +149,67 @@ curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scri
     llm-wiki/SKILL.md          # always-on guidance for when to use Wiki tools
 ```
 
+## How It Works
+
+```mermaid
+flowchart TD
+  UserFact["User gives durable fact"] --> Upsert["wiki_upsert"]
+  Upsert --> Page["Markdown page"]
+  Upsert --> PagesTable["SQLite pages table"]
+  Upsert --> FTS["SQLite FTS index"]
+  Upsert --> Bridge["MEMORY.md bridge"]
+
+  UserQuestion["User asks a question"] --> Search["wiki_search"]
+  Search --> Exact["Exact title / id / alias"]
+  Search --> FullText["SQLite full-text search"]
+  Search --> Fallback["Substring fallback"]
+  Exact --> Read["wiki_read"]
+  FullText --> Read
+  Fallback --> Read
+  Read --> Answer["NanoBot answers with recalled context"]
+
+  Link["wiki_link"] --> Graph["SQLite links table"]
+  Graph --> Bridge
+  Graph --> UI["Graph UI"]
+```
+
+### Memory write flow
+
+1. NanoBot decides a fact is durable.
+2. It calls `wiki_upsert`.
+3. The plugin writes a Markdown page under `memory/wiki/pages/`.
+4. The same page is indexed into SQLite `pages`.
+5. Title, content, tags, and aliases are indexed for recall.
+6. `MEMORY.md` is refreshed with active pages and recent graph links.
+7. If a relationship matters, NanoBot calls `wiki_link`.
+
+### Recall flow
+
+1. NanoBot searches with `wiki_search(query=...)`.
+2. The store tries exact page title, page id, and alias first.
+3. It then runs precise SQLite FTS search.
+4. It falls back to substring matching for edge cases.
+5. NanoBot calls `wiki_read(selector=...)` before relying on full page details.
+
+### Delete flow
+
+1. NanoBot calls `wiki_forget(selector=...)`.
+2. The page is removed from active SQLite `pages`.
+3. The page is removed from full-text search.
+4. Related graph links are removed.
+5. By default, the Markdown file is moved to `memory/wiki/archive/`.
+6. Use `archive=false` in the tool or `--delete` in the CLI for permanent file deletion.
+
 ## NanoBot Tools
 
-- `wiki_search(query, limit, tag)` searches Wiki pages.
-- `wiki_read(selector)` reads a page by title, id, or alias.
-- `wiki_upsert(title, content, ...)` creates, replaces, or appends to a page.
-- `wiki_link(from_selector, to_selector, relation)` links two pages.
-- `wiki_forget(selector, archive)` deletes or archives a page.
-- `wiki_status()` reports storage paths and counts.
-
-## Memory Strategy
-
-- Write durable facts as small pages with stable titles, tags, and aliases. Use `mode="append"` for incremental facts and `mode="replace"` for corrected summaries.
-- Recall uses exact page/alias matching first, then precise full-text search, then substring fallback. Hyphenated or numbered test tokens stay precise so deletion checks do not match unrelated partial terms.
-- Use `wiki_read` after `wiki_search` before relying on an old fact; search results are previews, not authoritative context.
-- Connect pages with `wiki_link` when the relationship matters. The `MEMORY.md` bridge includes recent graph links so NanoBot can see both active pages and their structure.
-- `wiki_forget` removes the page from SQLite, full-text search, and graph links. With the default `archive=true`, the Markdown page is moved to `memory/wiki/archive/` for auditability.
+| Tool | Purpose |
+| --- | --- |
+| `wiki_search(query, limit, tag)` | Search Wiki pages by title, content, tags, and aliases. |
+| `wiki_read(selector)` | Read one full page by title, id, or alias. |
+| `wiki_upsert(title, content, ...)` | Create, replace, or append to a Wiki page. |
+| `wiki_link(from_selector, to_selector, relation)` | Create a typed graph edge between pages. |
+| `wiki_forget(selector, archive)` | Archive or delete a page and remove it from active recall. |
+| `wiki_status()` | Show storage paths, page count, link count, and cursor state. |
 
 ## CLI
 
@@ -69,32 +219,185 @@ nanobot-wiki status
 nanobot-wiki search "project preference"
 nanobot-wiki read "User Profile"
 nanobot-wiki upsert "Current Project" --content "Building a NanoBot memory plugin."
+nanobot-wiki upsert "Current Project" --content "New fact." --mode append
 nanobot-wiki link "User Profile" "Current Project" --relation working_on
+nanobot-wiki forget "Current Project"
+nanobot-wiki forget "Current Project" --delete
 nanobot-wiki dream --once
 nanobot-wiki ui
 nanobot-wiki doctor
 ```
 
-The local UI listens on [http://127.0.0.1:8766](http://127.0.0.1:8766) by default and includes a page graph view backed by the `links` table:
+## Local UI
+
+The built-in UI is a zero-build local page served by the Python package:
 
 ```bash
 nanobot-wiki ui --workspace ~/.nanobot/workspace
 ```
 
-`dream --once` consumes new entries from `memory/history.jsonl` into a `Conversation Inbox` page. It is deterministic in this first release so it can run without API keys. The intended next step is a NanoBot core `memory_processors` extension point that lets this package replace or augment Dream with an LLM-driven Wiki maintainer.
+Open:
 
-## Local Development
+```text
+http://127.0.0.1:8766
+```
+
+The UI supports:
+
+- Page list and search.
+- Page create/edit/archive.
+- Tags, aliases, and page type fields.
+- Manual page linking.
+- Graph visualization backed by the SQLite `links` table.
+- Draggable graph nodes with resettable local layout.
+
+## Memory Strategy
+
+- Store durable facts as small pages with stable titles, tags, and aliases.
+- Use `mode="append"` for incremental facts.
+- Use `mode="replace"` for corrected summaries.
+- Prefer `wiki_search` followed by `wiki_read`; search results are previews.
+- Link pages when relationships matter, for example:
+  `Projects -tracks-> NanoBot LLM Wiki`.
+- Keep uncertain or unresolved facts in an `Open Questions` page.
+- Use `wiki_forget` when the user asks to forget something.
+- Deleted pages are removed from active recall. With `archive=true`, Markdown is kept only as an audit archive.
+
+## Storage Model
+
+The Wiki is local-first:
+
+- Markdown is the human-readable source of truth.
+- SQLite provides indexed lookup and graph relations.
+- The plugin does not send Wiki data to any extra service.
+- Backups can be done by copying `~/.nanobot/workspace/memory/wiki/`.
+
+SQLite tables:
+
+| Table | Purpose |
+| --- | --- |
+| `pages` | Page metadata and content. |
+| `page_fts` | Full-text recall index. |
+| `links` | Directed typed graph edges between pages. |
+
+## Example Conversation Behavior
+
+User:
+
+```text
+Remember that this project should be deployable with one command.
+```
+
+NanoBot should call:
+
+```text
+wiki_upsert(title="NanoBot LLM Wiki Deployment Goal", ...)
+```
+
+Later, user:
+
+```text
+What was the deployment goal for the Wiki plugin?
+```
+
+NanoBot should call:
+
+```text
+wiki_search(query="deployment goal Wiki plugin")
+wiki_read(selector="NanoBot LLM Wiki Deployment Goal")
+```
+
+## Development
 
 From this repository:
 
 ```bash
-PYTHONPATH=src:/path/to/nanobot pytest -q
-ruff check src tests
+uv sync --extra dev
+uv run --extra dev pytest -q
+uv run --extra dev ruff check src tests
+uv build
 ```
+
+Run the UI against a temporary workspace:
+
+```bash
+uv run nanobot-wiki --workspace /tmp/nanobot-wiki-demo install
+uv run nanobot-wiki --workspace /tmp/nanobot-wiki-demo ui
+```
+
+## Troubleshooting
+
+### `uv is required`
+
+Install `uv` first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### NanoBot starts but Wiki tools are missing
+
+NanoBot discovers tools from the Python environment it runs in. Reinstall NanoBot with the
+plugin attached:
+
+```bash
+uv tool install --force --with git+https://github.com/yu-xin-c/nanobot-llm-wiki nanobot-ai
+```
+
+Then restart:
+
+```bash
+nanobot gateway -v
+```
+
+### Search cannot find a memory
+
+Check the page exists:
+
+```bash
+nanobot-wiki search "your query"
+nanobot-wiki status
+```
+
+If the fact exists but search is weak, add a stable alias or tag:
+
+```bash
+nanobot-wiki upsert "Page Title" \
+  --content "Updated summary." \
+  --alias "short memorable name" \
+  --tag project \
+  --mode append
+```
+
+### Delete still leaves a Markdown file
+
+That is expected when archiving. `wiki_forget` defaults to `archive=true`, which removes the
+page from active recall but moves the Markdown file to `memory/wiki/archive/`. Use permanent
+deletion only when you really want no archive:
+
+```bash
+nanobot-wiki forget "Page Title" --delete
+```
+
+### UI port is already in use
+
+Run on another port:
+
+```bash
+nanobot-wiki ui --port 8877
+```
+
+## Current Limitations
+
+- This is a tool-based memory plugin, not a replacement for NanoBot core memory internals.
+- `dream --once` deterministically imports `memory/history.jsonl`; it is not yet an LLM curator.
+- There is no vector database in the first release.
+- Multi-user access control is inherited from the local NanoBot deployment model.
 
 ## Design Goals
 
 - One-command setup for normal NanoBot users.
 - Local-first memory that users can inspect, edit, back up, and delete.
-- Safe bootstrap path that does not replace NanoBot's built-in `MemoryStore`.
+- A Wiki structure that supports pages, tags, aliases, and typed graph links.
+- Safe bootstrap path that does not require changing NanoBot core.
 - A clean migration path toward a first-class NanoBot memory backend.
