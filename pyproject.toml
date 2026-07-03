@@ -40,6 +40,7 @@ wiki_read = "nanobot_llm_wiki.tools:WikiReadTool"
 wiki_upsert = "nanobot_llm_wiki.tools:WikiUpsertTool"
 wiki_link = "nanobot_llm_wiki.tools:WikiLinkTool"
 wiki_forget = "nanobot_llm_wiki.tools:WikiForgetTool"
+wiki_import = "nanobot_llm_wiki.tools:WikiImportTool"
 wiki_status = "nanobot_llm_wiki.tools:WikiStatusTool"
 
 [tool.hatch.build.targets.wheel]

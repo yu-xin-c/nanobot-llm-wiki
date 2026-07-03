@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     upsert.add_argument("--type", default="note", dest="page_type")
     upsert.add_argument("--mode", choices=["replace", "append"], default="replace")
 
+    import_cmd = sub.add_parser("import", help="Import a local text knowledge base into Wiki pages.")
+    import_cmd.add_argument("path", help="File or directory to import.")
+    import_cmd.add_argument("--index-title", default=None, help="Title for the generated index page.")
+    import_cmd.add_argument("--tag", action="append", default=[], help="Extra tag for imported pages.")
+    import_cmd.add_argument("--type", default="knowledge-doc", dest="page_type")
+    import_cmd.add_argument("--relation", default="contains", help="Graph relation from index to pages.")
+    import_cmd.add_argument("--max-bytes", type=int, default=512_000, help="Max bytes per imported file.")
+
     forget = sub.add_parser("forget", help="Archive or delete a Wiki page.")
     forget.add_argument("selector")
     forget.add_argument("--delete", action="store_true", help="Delete instead of archiving.")
@@ -103,6 +111,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         store.write_memory_bridge()
         print(f"Saved {page.title} ({page.id})")
+        return 0
+    if args.command == "import":
+        result = store.import_knowledge_base(
+            args.path,
+            index_title=args.index_title,
+            tags=args.tag,
+            page_type=args.page_type,
+            relation=args.relation,
+            max_bytes=args.max_bytes,
+        )
+        print(
+            json.dumps(
+                {
+                    "source_path": result.source_path,
+                    "index_page": {
+                        "id": result.index_page.id,
+                        "title": result.index_page.title,
+                    },
+                    "imported": [
+                        {
+                            "path": item.path,
+                            "id": item.page.id,
+                            "title": item.page.title,
+                        }
+                        for item in result.imported
+                    ],
+                    "skipped": result.skipped,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     if args.command == "forget":
         page = store.forget_page(args.selector, archive=not args.delete)

@@ -30,13 +30,15 @@ What the one-command installer does:
 - Writes the generated always-on skill at `~/.nanobot/workspace/skills/llm-wiki/SKILL.md`.
 - Writes a `memory/MEMORY.md` bridge so NanoBot knows when to use Wiki tools.
 - Registers these NanoBot tools through Python entry points: `wiki_search`, `wiki_read`,
-  `wiki_upsert`, `wiki_link`, `wiki_forget`, and `wiki_status`.
+  `wiki_upsert`, `wiki_link`, `wiki_import`, `wiki_forget`, and `wiki_status`.
 
 What it does not do:
 
 - It does not create or configure your LLM provider API key.
 - It does not overwrite a custom `config.json`.
 - It does not start a background UI service by itself.
+- It does not automatically import your existing documents; use `nanobot-wiki import`
+  after installation.
 - It does not replace NanoBot core memory internals; it adds a tool-based Wiki memory layer.
 
 ## Prerequisites
@@ -130,7 +132,7 @@ http://127.0.0.1:8766
 When NanoBot starts with `-v`, logs should include the Wiki tools:
 
 ```text
-wiki_forget, wiki_link, wiki_read, wiki_search, wiki_status, wiki_upsert
+wiki_forget, wiki_import, wiki_link, wiki_read, wiki_search, wiki_status, wiki_upsert
 ```
 
 ## What Gets Installed
@@ -200,6 +202,16 @@ flowchart TD
 5. By default, the Markdown file is moved to `memory/wiki/archive/`.
 6. Use `archive=false` in the tool or `--delete` in the CLI for permanent file deletion.
 
+### Knowledge base import flow
+
+1. Run `nanobot-wiki import /path/to/docs` or ask NanoBot to call `wiki_import(path=...)`.
+2. The importer recursively scans supported text files.
+3. Each file becomes a stable Wiki page.
+4. A generated index page is created for the imported knowledge base.
+5. The index page links to every imported page with a typed `contains` relation.
+6. Re-running the same import updates the same pages instead of creating duplicates.
+7. `MEMORY.md` is refreshed so NanoBot can discover the new knowledge base.
+
 ## NanoBot Tools
 
 | Tool | Purpose |
@@ -208,6 +220,7 @@ flowchart TD
 | `wiki_read(selector)` | Read one full page by title, id, or alias. |
 | `wiki_upsert(title, content, ...)` | Create, replace, or append to a Wiki page. |
 | `wiki_link(from_selector, to_selector, relation)` | Create a typed graph edge between pages. |
+| `wiki_import(path, index_title, tags, ...)` | Import a local text file or folder as a Wiki knowledge base. |
 | `wiki_forget(selector, archive)` | Archive or delete a page and remove it from active recall. |
 | `wiki_status()` | Show storage paths, page count, link count, and cursor state. |
 
@@ -220,6 +233,7 @@ nanobot-wiki search "project preference"
 nanobot-wiki read "User Profile"
 nanobot-wiki upsert "Current Project" --content "Building a NanoBot memory plugin."
 nanobot-wiki upsert "Current Project" --content "New fact." --mode append
+nanobot-wiki import ./docs --index-title "Project Docs" --tag docs
 nanobot-wiki link "User Profile" "Current Project" --relation working_on
 nanobot-wiki forget "Current Project"
 nanobot-wiki forget "Current Project" --delete
@@ -227,6 +241,58 @@ nanobot-wiki dream --once
 nanobot-wiki ui
 nanobot-wiki doctor
 ```
+
+## One-command Knowledge Base Import
+
+After installing the plugin, import an existing local knowledge base with one command:
+
+```bash
+nanobot-wiki import ./docs --index-title "Project Docs" --tag docs
+```
+
+This command creates:
+
+- One index page, for example `Project Docs`.
+- One Wiki page per imported file.
+- `Project Docs -contains-> Imported Page` graph links.
+- Search entries in SQLite FTS.
+- Updated `MEMORY.md` bridge content.
+
+Supported file extensions:
+
+```text
+.md, .markdown, .txt, .rst, .adoc, .csv, .json, .jsonl, .toml, .yaml, .yml
+```
+
+Example:
+
+```bash
+nanobot-wiki import ~/company-handbook \
+  --index-title "Company Handbook" \
+  --tag handbook \
+  --tag imported
+```
+
+Re-importing the same folder is incremental and stable. The importer uses deterministic page
+ids based on the source folder and relative file path, so changed files update existing Wiki
+pages instead of creating duplicates.
+
+Import options:
+
+| Option | Purpose |
+| --- | --- |
+| `--index-title` | Title for the generated knowledge base index page. |
+| `--tag` | Extra tag added to the index and imported pages. Can be repeated. |
+| `--type` | Page type for imported document pages. Defaults to `knowledge-doc`. |
+| `--relation` | Graph relation from index page to imported pages. Defaults to `contains`. |
+| `--max-bytes` | Per-file import limit. Defaults to `512000`. |
+
+Current importer scope:
+
+- It imports UTF-8 text documents.
+- It skips hidden files, unsupported extensions, oversized files, and non-UTF-8 files.
+- PDF, Word, Excel, and web page crawling are not built in yet. Convert those sources to
+  Markdown or text before importing.
 
 ## Local UI
 
@@ -369,6 +435,21 @@ nanobot-wiki upsert "Page Title" \
   --mode append
 ```
 
+### Knowledge base import skipped files
+
+The importer prints skipped files in JSON output. Common reasons:
+
+- Unsupported extension.
+- File is larger than `--max-bytes`.
+- File is hidden.
+- File is not valid UTF-8 text.
+
+Convert binary documents to Markdown/text first, or increase the size limit:
+
+```bash
+nanobot-wiki import ./docs --max-bytes 2000000
+```
+
 ### Delete still leaves a Markdown file
 
 That is expected when archiving. `wiki_forget` defaults to `archive=true`, which removes the
@@ -392,6 +473,7 @@ nanobot-wiki ui --port 8877
 - This is a tool-based memory plugin, not a replacement for NanoBot core memory internals.
 - `dream --once` deterministically imports `memory/history.jsonl`; it is not yet an LLM curator.
 - There is no vector database in the first release.
+- Knowledge base import is text-first; rich document parsing is planned but not included.
 - Multi-user access control is inherited from the local NanoBot deployment model.
 
 ## Design Goals

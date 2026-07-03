@@ -186,6 +186,74 @@ class WikiForgetTool(_WikiTool):
         return f"{action} Wiki page `{page.title}` (`{page.id}`)."
 
 
+class WikiImportTool(_WikiTool):
+    @property
+    def name(self) -> str:
+        return "wiki_import"
+
+    @property
+    def description(self) -> str:
+        return "Import a local text knowledge base into NanoBot LLM Wiki pages."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Local file or directory path to import.",
+                },
+                "index_title": {
+                    "type": ["string", "null"],
+                    "description": "Optional title for the generated index page.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                    "description": "Extra tags for the index page and imported pages.",
+                },
+                "page_type": {"type": "string", "default": "knowledge-doc"},
+                "relation": {
+                    "type": "string",
+                    "default": "contains",
+                    "description": "Graph relation from index page to imported pages.",
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 512000,
+                    "description": "Maximum bytes per imported file.",
+                },
+            },
+            "required": ["path"],
+        }
+
+    async def execute(
+        self,
+        path: str,
+        index_title: str | None = None,
+        tags: list[str] | None = None,
+        page_type: str = "knowledge-doc",
+        relation: str = "contains",
+        max_bytes: int = 512_000,
+    ) -> str:
+        result = self.store.import_knowledge_base(
+            path,
+            index_title=index_title,
+            tags=tags or [],
+            page_type=page_type,
+            relation=relation,
+            max_bytes=max_bytes,
+        )
+        skipped = f", skipped {len(result.skipped)} files" if result.skipped else ""
+        return (
+            f"Imported knowledge base `{result.index_page.title}` (`{result.index_page.id}`) "
+            f"from `{result.source_path}` with {len(result.imported)} pages{skipped}."
+        )
+
+
 class WikiStatusTool(_WikiTool):
     @property
     def name(self) -> str:

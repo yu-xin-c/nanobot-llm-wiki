@@ -146,3 +146,35 @@ def test_memory_bridge_includes_recent_graph_links(tmp_path) -> None:
 
     assert "### Recent Wiki Links" in text
     assert "[[User Profile]] -working_on-> [[NanoBot Project]]" in text
+
+
+def test_import_knowledge_base_creates_pages_index_and_links(tmp_path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "README.md").write_text("# Product Handbook\n\nUnique token: alpha-import-42.", encoding="utf-8")
+    (kb / "notes.txt").write_text("Support escalation policy lives here.", encoding="utf-8")
+    (kb / "image.png").write_bytes(b"not imported")
+
+    store = WikiStore(tmp_path / "workspace")
+    result = store.import_knowledge_base(kb, index_title="Team Knowledge", tags=["team"])
+
+    assert result.index_page.title == "Team Knowledge"
+    assert {item.page.title for item in result.imported} == {"Product Handbook", "notes"}
+    assert result.skipped == ["image.png: unsupported extension .png"]
+    assert store.search("alpha-import-42")[0].page.title == "Product Handbook"
+    assert store.search("Support escalation")[0].page.title == "notes"
+
+    links = store.list_links()
+    assert len(links) == 2
+    assert {link.relation for link in links} == {"contains"}
+    assert {link.from_title for link in links} == {"Team Knowledge"}
+
+    memory_text = (tmp_path / "workspace" / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "[[Team Knowledge]] -contains-> [[Product Handbook]]" in memory_text
+
+    (kb / "notes.txt").write_text("Support escalation policy changed.", encoding="utf-8")
+    second = store.import_knowledge_base(kb, index_title="Team Knowledge", tags=["team"])
+    assert len(second.imported) == 2
+    assert store.status()["pages"] == 3
+    assert len(store.list_links()) == 2
+    assert "changed" in store.get_page("notes.txt").content
