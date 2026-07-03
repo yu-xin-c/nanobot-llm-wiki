@@ -42,16 +42,16 @@ def test_cli_link(tmp_path, capsys) -> None:
 
 
 def test_cli_import_knowledge_base(tmp_path, capsys) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "guide.md").write_text("# Setup Guide\n\nInstall with one command.", encoding="utf-8")
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    (raw_dir / "guide.md").write_text("# Setup Guide\n\nInstall with one command.", encoding="utf-8")
 
     assert (
         main([
             "--workspace",
             str(tmp_path / "workspace"),
             "import",
-            str(source),
+            str(raw_dir),
             "--index-title",
             "Imported Docs",
             "--tag",
@@ -60,8 +60,11 @@ def test_cli_import_knowledge_base(tmp_path, capsys) -> None:
         == 0
     )
     payload = json.loads(capsys.readouterr().out)
+    assert "raw_path" in payload
+    assert "source_path" not in payload
     assert payload["index_page"]["title"] == "Imported Docs"
     assert payload["imported"][0]["title"] == "Setup Guide"
+    assert payload["imported"][0]["raw_path"] == "guide.md"
 
     store = WikiStore(tmp_path / "workspace")
     assert store.search("one command")[0].page.title == "Setup Guide"
@@ -90,19 +93,20 @@ def test_tools_round_trip(tmp_path) -> None:
 
 
 def test_import_tool_round_trip(tmp_path) -> None:
-    source = tmp_path / "tool-source"
-    source.mkdir()
-    (source / "manual.md").write_text("# Tool Manual\n\nImported through wiki_import.", encoding="utf-8")
+    raw_dir = tmp_path / "tool-raw"
+    raw_dir.mkdir()
+    (raw_dir / "manual.md").write_text("# Tool Manual\n\nImported through wiki_import.", encoding="utf-8")
 
     import_tool = WikiImportTool(tmp_path / "workspace")
     result = asyncio.run(
         import_tool.execute(
-            path=str(source),
+            path=str(raw_dir),
             index_title="Tool Imported Docs",
             tags=["tool-docs"],
         )
     )
     assert "Imported knowledge base" in result
+    assert "from raw" in result
     assert "with 1 pages" in result
 
     store = WikiStore(tmp_path / "workspace")

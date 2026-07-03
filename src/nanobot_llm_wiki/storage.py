@@ -141,10 +141,14 @@ class KnowledgeImportItem:
 
 @dataclass(slots=True)
 class KnowledgeImportResult:
-    source_path: str
+    raw_path: str
     index_page: WikiPage
     imported: list[KnowledgeImportItem] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+
+    @property
+    def source_path(self) -> str:
+        return self.raw_path
 
 
 class WikiStore:
@@ -336,31 +340,39 @@ class WikiStore:
 
     def import_knowledge_base(
         self,
-        source: str | Path,
+        raw: str | Path | None = None,
         *,
+        source: str | Path | None = None,
         index_title: str | None = None,
         tags: list[str] | None = None,
         page_type: str = "knowledge-doc",
         relation: str = "contains",
         max_bytes: int = 512_000,
     ) -> KnowledgeImportResult:
-        source_path = Path(source).expanduser().resolve()
-        if not source_path.exists():
-            raise FileNotFoundError(f"knowledge base path not found: {source_path}")
+        if raw is None:
+            raw = source
+        elif source is not None and Path(raw).expanduser().resolve() != Path(source).expanduser().resolve():
+            raise ValueError("raw and source must refer to the same path")
+        if raw is None:
+            raise ValueError("raw path is required")
+
+        raw_path = Path(raw).expanduser().resolve()
+        if not raw_path.exists():
+            raise FileNotFoundError(f"raw knowledge base path not found: {raw_path}")
         if max_bytes < 1:
             raise ValueError("max_bytes must be greater than 0")
 
-        files = self._import_files(source_path)
-        kb_slug = slugify(source_path.stem if source_path.is_file() else source_path.name)
-        title = index_title or f"Imported Knowledge Base: {source_path.name}"
+        files = self._import_files(raw_path)
+        kb_slug = slugify(raw_path.stem if raw_path.is_file() else raw_path.name)
+        title = index_title or f"Imported Knowledge Base: {raw_path.name}"
         base_tags = self._merged_strings(["knowledge-base", "imported", kb_slug], tags or [])
         index_id = f"kb-{kb_slug}"
         index_page = self.upsert_page(
             title=title,
-            content=self._knowledge_index_content(source_path, []),
+            content=self._knowledge_index_content(raw_path, []),
             page_type="knowledge-base-index",
             tags=base_tags,
-            aliases=[source_path.name, str(source_path)],
+            aliases=[raw_path.name, str(raw_path)],
             page_id=index_id,
             mode="replace",
         )
@@ -369,7 +381,7 @@ class WikiStore:
         skipped: list[str] = []
         for path in files:
             reason = self._skip_import_file(path, max_bytes=max_bytes)
-            rel_path = self._relative_import_path(source_path, path)
+            rel_path = self._relative_import_path(raw_path, path)
             if reason:
                 skipped.append(f"{rel_path}: {reason}")
                 continue
@@ -396,30 +408,30 @@ class WikiStore:
 
         index_page = self.upsert_page(
             title=title,
-            content=self._knowledge_index_content(source_path, imported),
+            content=self._knowledge_index_content(raw_path, imported),
             page_type="knowledge-base-index",
             tags=base_tags,
-            aliases=[source_path.name, str(source_path)],
+            aliases=[raw_path.name, str(raw_path)],
             page_id=index_id,
             mode="replace",
         )
         self.write_memory_bridge()
         return KnowledgeImportResult(
-            source_path=str(source_path),
+            raw_path=str(raw_path),
             index_page=index_page,
             imported=imported,
             skipped=skipped,
         )
 
     @staticmethod
-    def _import_files(source_path: Path) -> list[Path]:
-        if source_path.is_file():
-            return [source_path]
-        return sorted(path for path in source_path.rglob("*") if path.is_file())
+    def _import_files(raw_path: Path) -> list[Path]:
+        if raw_path.is_file():
+            return [raw_path]
+        return sorted(path for path in raw_path.rglob("*") if path.is_file())
 
     @staticmethod
-    def _relative_import_path(source_path: Path, path: Path) -> str:
-        root = source_path.parent if source_path.is_file() else source_path
+    def _relative_import_path(raw_path: Path, path: Path) -> str:
+        root = raw_path.parent if raw_path.is_file() else raw_path
         try:
             return path.relative_to(root).as_posix()
         except ValueError:
@@ -448,17 +460,17 @@ class WikiStore:
     @staticmethod
     def _import_page_content(rel_path: str, content: str) -> str:
         body = content.strip()
-        return f"## Imported Source\n\n- Path: `{rel_path}`\n\n## Content\n\n{body}"
+        return f"## Raw\n\n- Raw path: `{rel_path}`\n\n## Content\n\n{body}"
 
     @staticmethod
     def _knowledge_index_content(
-        source_path: Path,
+        raw_path: Path,
         imported: list[KnowledgeImportItem],
     ) -> str:
         lines = [
             "## Imported Knowledge Base",
             "",
-            f"- Source: `{source_path}`",
+            f"- Raw root: `{raw_path}`",
             f"- Imported pages: {len(imported)}",
             "",
             "## Pages",

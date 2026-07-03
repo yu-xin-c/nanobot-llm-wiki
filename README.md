@@ -274,7 +274,7 @@ nanobot-wiki import ~/company-handbook \
 ```
 
 Re-importing the same folder is incremental and stable. The importer uses deterministic page
-ids based on the source folder and relative file path, so changed files update existing Wiki
+ids based on the raw root and relative raw path, so changed files update existing Wiki
 pages instead of creating duplicates.
 
 Import options:
@@ -291,7 +291,7 @@ Current importer scope:
 
 - It imports UTF-8 text documents.
 - It skips hidden files, unsupported extensions, oversized files, and non-UTF-8 files.
-- PDF, Word, Excel, and web page crawling are not built in yet. Convert those sources to
+- PDF, Word, Excel, and web page crawling are not built in yet. Convert those raw files to
   Markdown or text before importing.
 
 ## Local UI
@@ -333,7 +333,7 @@ The UI supports:
 
 The Wiki is local-first:
 
-- Markdown is the human-readable source of truth.
+- Markdown is the human-readable raw record.
 - SQLite provides indexed lookup and graph relations.
 - The plugin does not send Wiki data to any extra service.
 - Backups can be done by copying `~/.nanobot/workspace/memory/wiki/`.

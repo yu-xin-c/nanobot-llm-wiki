@@ -193,7 +193,7 @@ class WikiImportTool(_WikiTool):
 
     @property
     def description(self) -> str:
-        return "Import a local text knowledge base into NanoBot LLM Wiki pages."
+        return "Import a local raw text knowledge base into NanoBot LLM Wiki pages."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -202,7 +202,7 @@ class WikiImportTool(_WikiTool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Local file or directory path to import.",
+                    "description": "Local raw file or directory path to import.",
                 },
                 "index_title": {
                     "type": ["string", "null"],
@@ -250,7 +250,7 @@ class WikiImportTool(_WikiTool):
         skipped = f", skipped {len(result.skipped)} files" if result.skipped else ""
         return (
             f"Imported knowledge base `{result.index_page.title}` (`{result.index_page.id}`) "
-            f"from `{result.source_path}` with {len(result.imported)} pages{skipped}."
+            f"from raw `{result.raw_path}` with {len(result.imported)} pages{skipped}."
         )
 
 

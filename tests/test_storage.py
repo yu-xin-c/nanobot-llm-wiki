@@ -159,10 +159,13 @@ def test_import_knowledge_base_creates_pages_index_and_links(tmp_path) -> None:
     result = store.import_knowledge_base(kb, index_title="Team Knowledge", tags=["team"])
 
     assert result.index_page.title == "Team Knowledge"
+    assert result.raw_path == str(kb.resolve())
+    assert result.source_path == result.raw_path
     assert {item.page.title for item in result.imported} == {"Product Handbook", "notes"}
     assert result.skipped == ["image.png: unsupported extension .png"]
     assert store.search("alpha-import-42")[0].page.title == "Product Handbook"
     assert store.search("Support escalation")[0].page.title == "notes"
+    assert "Raw path: `README.md`" in store.get_page("README.md").content
 
     links = store.list_links()
     assert len(links) == 2
@@ -171,6 +174,7 @@ def test_import_knowledge_base_creates_pages_index_and_links(tmp_path) -> None:
 
     memory_text = (tmp_path / "workspace" / "memory" / "MEMORY.md").read_text(encoding="utf-8")
     assert "[[Team Knowledge]] -contains-> [[Product Handbook]]" in memory_text
+    assert "Raw root:" in result.index_page.content
 
     (kb / "notes.txt").write_text("Support escalation policy changed.", encoding="utf-8")
     second = store.import_knowledge_base(kb, index_title="Team Knowledge", tags=["team"])

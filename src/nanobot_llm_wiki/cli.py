@@ -124,14 +124,14 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "source_path": result.source_path,
+                    "raw_path": result.raw_path,
                     "index_page": {
                         "id": result.index_page.id,
                         "title": result.index_page.title,
                     },
                     "imported": [
                         {
-                            "path": item.path,
+                            "raw_path": item.path,
                             "id": item.page.id,
                             "title": item.page.title,
                         }
