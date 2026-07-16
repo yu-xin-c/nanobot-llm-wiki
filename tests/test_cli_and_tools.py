@@ -8,8 +8,18 @@ from nanobot.agent.tools.loader import ToolLoader
 from nanobot.agent.tools.registry import ToolRegistry
 
 from nanobot_llm_wiki.cli import main
+from nanobot_llm_wiki.diagnostics import diagnose_workspace
+from nanobot_llm_wiki.installer import install_workspace
 from nanobot_llm_wiki.storage import WikiStore
-from nanobot_llm_wiki.tools import WikiImportTool, WikiReadTool, WikiSearchTool, WikiUpsertTool
+from nanobot_llm_wiki.tools import (
+    WikiDoctorTool,
+    WikiForgetTool,
+    WikiImportTool,
+    WikiLinkTool,
+    WikiReadTool,
+    WikiSearchTool,
+    WikiUpsertTool,
+)
 
 
 def test_cli_install_and_search(tmp_path, capsys) -> None:
@@ -71,6 +81,57 @@ def test_cli_import_knowledge_base(tmp_path, capsys) -> None:
     assert store.list_links()[0].relation == "contains"
 
 
+def test_cli_reindex_and_user_facing_errors(tmp_path, capsys) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(title="Manual Sync", content="Original content.")
+    page_path = store.page_path("manual-sync")
+    page_path.write_text(
+        page_path.read_text(encoding="utf-8").replace("Original content.", "Edited on disk."),
+        encoding="utf-8",
+    )
+
+    assert main(["--workspace", str(tmp_path), "reindex"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["indexed"] == 1
+    assert WikiStore(tmp_path).search("Edited on disk")[0].page.title == "Manual Sync"
+
+    assert main(["--workspace", str(tmp_path), "link", "missing", "Manual Sync"]) == 1
+    captured = capsys.readouterr()
+    assert "Error: page not found: missing" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_doctor_is_read_only_and_reports_installed_workspace(tmp_path, capsys) -> None:
+    workspace = tmp_path / "missing-workspace"
+
+    assert main(["--workspace", str(workspace), "doctor"]) == 1
+    output = capsys.readouterr().out
+    assert "doctor: unhealthy" in output
+    assert "Workspace directory is missing" in output
+    assert not workspace.exists()
+
+    install_workspace(workspace)
+    assert main(["--workspace", str(workspace), "doctor", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["health"] == "healthy"
+    assert result["summary"]["errors"] == 0
+    assert result["summary"]["warnings"] == 0
+
+
+def test_doctor_reports_index_drift_without_changing_files(tmp_path) -> None:
+    install_workspace(tmp_path)
+    manual = tmp_path / "memory" / "wiki" / "pages" / "manual.md"
+    manual.write_text("# Manual\n\nNot indexed yet.", encoding="utf-8")
+
+    result = diagnose_workspace(tmp_path)
+
+    assert result["health"] == "attention"
+    index_check = next(check for check in result["checks"] if check["id"] == "index_sync")
+    assert index_check["status"] == "warning"
+    assert index_check["action"] == "reindex"
+    assert WikiStore(tmp_path).get_page("Manual") is None
+
+
 def test_tools_round_trip(tmp_path) -> None:
     upsert = WikiUpsertTool(tmp_path)
     search = WikiSearchTool(tmp_path)
@@ -90,6 +151,27 @@ def test_tools_round_trip(tmp_path) -> None:
 
     content = asyncio.run(read.execute(selector="User Preference"))
     assert "local tests" in content
+
+
+def test_tools_return_errors_for_bad_inputs(tmp_path) -> None:
+    link_tool = WikiLinkTool(tmp_path)
+    forget_tool = WikiForgetTool(tmp_path)
+    import_tool = WikiImportTool(tmp_path)
+    upsert_tool = WikiUpsertTool(tmp_path)
+
+    assert asyncio.run(link_tool.execute("missing", "also missing")).startswith("Error: page not found")
+    assert asyncio.run(forget_tool.execute("missing")).startswith("Error: page not found")
+    assert asyncio.run(import_tool.execute(str(tmp_path / "missing"))).startswith("Error: raw")
+    assert asyncio.run(upsert_tool.execute(title="", content="empty title")).startswith("Error: title")
+
+
+def test_doctor_tool_is_read_only(tmp_path) -> None:
+    workspace = tmp_path / "missing"
+    result = asyncio.run(WikiDoctorTool(workspace).execute())
+
+    assert "doctor: unhealthy" in result
+    assert "Workspace directory is missing" in result
+    assert not workspace.exists()
 
 
 def test_import_tool_round_trip(tmp_path) -> None:
@@ -122,9 +204,12 @@ def test_nanobot_tool_loader_can_register_plugin_tools(tmp_path) -> None:
         WikiReadTool,
         WikiUpsertTool,
         WikiImportTool,
+        WikiDoctorTool,
     ]).load(ctx, registry)
 
-    assert {"wiki_search", "wiki_read", "wiki_upsert", "wiki_import"}.issubset(set(registered))
+    assert {"wiki_search", "wiki_read", "wiki_upsert", "wiki_import", "wiki_doctor"}.issubset(
+        set(registered)
+    )
     assert registry.has("wiki_search")
     store = WikiStore(tmp_path)
     store.upsert_page(title="Loader Smoke", content="Tool loader can construct Wiki tools.")

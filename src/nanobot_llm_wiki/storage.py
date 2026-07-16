@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -63,6 +64,10 @@ def _load_json_list(value: str | None) -> list[Any]:
     except json.JSONDecodeError:
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _short_hash(value: str, *, length: int = 10) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
 
 
 def _frontmatter_value(value: Any) -> str:
@@ -366,7 +371,7 @@ class WikiStore:
         kb_slug = slugify(raw_path.stem if raw_path.is_file() else raw_path.name)
         title = index_title or f"Imported Knowledge Base: {raw_path.name}"
         base_tags = self._merged_strings(["knowledge-base", "imported", kb_slug], tags or [])
-        index_id = f"kb-{kb_slug}"
+        index_id = f"kb-{kb_slug}-{_short_hash(str(raw_path))}"
         index_page = self.upsert_page(
             title=title,
             content=self._knowledge_index_content(raw_path, []),
@@ -487,6 +492,9 @@ class WikiStore:
 
     def _save_page(self, page: WikiPage) -> None:
         self.page_path(page.id).write_text(page.to_markdown(), encoding="utf-8")
+        self._save_page_record(page)
+
+    def _save_page_record(self, page: WikiPage) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -519,6 +527,129 @@ class WikiStore:
                 ),
             )
             self._upsert_fts(conn, page)
+
+    def reindex_from_disk(self) -> dict[str, Any]:
+        """Rebuild SQLite search records from Markdown pages on disk."""
+        indexed: list[str] = []
+        skipped: list[str] = []
+        file_ids: set[str] = set()
+        for path in sorted(self.pages_dir.glob("*.md")):
+            if path.name.startswith(".") or not path.is_file():
+                continue
+            try:
+                page = self._page_from_markdown_path(path)
+            except (OSError, ValueError) as exc:
+                skipped.append(f"{path.name}: {exc}")
+                continue
+            self._save_page_record(page)
+            file_ids.add(page.id)
+            indexed.append(page.id)
+
+        removed: list[str] = []
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM pages").fetchall()
+        for row in rows:
+            page_id = str(row["id"])
+            if page_id in file_ids or self.page_path(page_id).exists():
+                continue
+            self._delete_page_record(page_id)
+            removed.append(page_id)
+
+        self.write_memory_bridge()
+        return {
+            "indexed": len(indexed),
+            "removed": len(removed),
+            "skipped": skipped,
+            "page_ids": indexed,
+            "removed_ids": removed,
+        }
+
+    def _delete_page_record(self, page_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM links WHERE from_id = ? OR to_id = ?", (page_id, page_id))
+            conn.execute("DELETE FROM page_fts WHERE page_id = ?", (page_id,))
+            conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
+
+    def _page_from_markdown_path(self, path: Path) -> WikiPage:
+        text = path.read_text(encoding="utf-8")
+        meta, content = self._split_frontmatter(text)
+        fallback_time = datetime.fromtimestamp(
+            path.stat().st_mtime,
+            timezone.utc,
+        ).replace(microsecond=0).isoformat()
+        frontmatter_id = str(meta.get("id") or "").strip()
+        frontmatter_path = self.page_path(slugify(frontmatter_id)) if frontmatter_id else None
+        page_id = slugify(frontmatter_id) if frontmatter_path == path else path.stem
+        return WikiPage(
+            id=page_id,
+            title=str(meta.get("title") or self._title_from_markdown(content, page_id)).strip(),
+            content=content.strip(),
+            page_type=str(meta.get("type") or meta.get("page_type") or "note").strip() or "note",
+            tags=self._frontmatter_list(meta.get("tags")),
+            aliases=self._frontmatter_list(meta.get("aliases")),
+            confidence=self._frontmatter_float(meta.get("confidence"), default=0.7),
+            created_at=str(meta.get("created_at") or fallback_time),
+            updated_at=str(meta.get("updated_at") or fallback_time),
+            source_cursors=self._frontmatter_ints(meta.get("source_cursors")),
+        )
+
+    @staticmethod
+    def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}, text
+        end_index = None
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                end_index = index
+                break
+        if end_index is None:
+            return {}, text
+        meta: dict[str, str] = {}
+        for line in lines[1:end_index]:
+            if not line.strip() or line.lstrip().startswith("#") or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            meta[key.strip()] = value.strip()
+        return meta, "\n".join(lines[end_index + 1 :])
+
+    @staticmethod
+    def _frontmatter_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            values = value
+        else:
+            raw = str(value).strip()
+            values = _load_json_list(raw)
+            if not values and raw and raw != "[]":
+                values = [part.strip() for part in raw.split(",")]
+        return [str(item).strip() for item in values if str(item).strip()]
+
+    @staticmethod
+    def _frontmatter_float(value: Any, *, default: float) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _frontmatter_ints(value: Any) -> list[int]:
+        parsed: list[int] = []
+        for item in WikiStore._frontmatter_list(value):
+            try:
+                parsed.append(int(item))
+            except ValueError:
+                continue
+        return sorted(set(parsed))
+
+    @staticmethod
+    def _title_from_markdown(content: str, fallback_id: str) -> str:
+        for line in content.splitlines()[:40]:
+            match = re.match(r"^\s{0,3}#\s+(.+?)\s*$", line)
+            if match:
+                return match.group(1).strip()
+        return fallback_id.replace("-", " ").strip().title() or fallback_id
 
     def _upsert_fts(self, conn: sqlite3.Connection, page: WikiPage) -> None:
         conn.execute("DELETE FROM page_fts WHERE page_id = ?", (page.id,))
@@ -741,10 +872,7 @@ class WikiStore:
                 shutil.move(str(source_path), target)
             else:
                 source_path.unlink()
-        with self._connect() as conn:
-            conn.execute("DELETE FROM links WHERE from_id = ? OR to_id = ?", (page.id, page.id))
-            conn.execute("DELETE FROM page_fts WHERE page_id = ?", (page.id,))
-            conn.execute("DELETE FROM pages WHERE id = ?", (page.id,))
+        self._delete_page_record(page.id)
         return page
 
     def status(self) -> dict[str, Any]:
@@ -890,6 +1018,7 @@ NanoBot has a local Wiki-backed long-term memory at `memory/wiki/`.
 - Use `wiki_link(from_selector=..., to_selector=...)` to connect related pages.
 - Use `wiki_import(path=...)` when the user asks to import a local folder or text knowledge base.
 - Use `wiki_forget(selector=...)` when the user asks to delete a memory.
+- Use `wiki_doctor()` when Wiki recall or installation health appears broken.
 
 Do not treat the Wiki as infallible. Prefer recent user corrections, and update stale pages when the user gives better information.
 """

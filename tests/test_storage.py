@@ -182,3 +182,52 @@ def test_import_knowledge_base_creates_pages_index_and_links(tmp_path) -> None:
     assert store.status()["pages"] == 3
     assert len(store.list_links()) == 2
     assert "changed" in store.get_page("notes.txt").content
+
+
+def test_import_ids_include_source_root_to_avoid_collisions(tmp_path) -> None:
+    first = tmp_path / "first" / "docs"
+    second = tmp_path / "second" / "docs"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "guide.md").write_text("# First Guide\n\nUnique token: first-root.", encoding="utf-8")
+    (second / "guide.md").write_text("# Second Guide\n\nUnique token: second-root.", encoding="utf-8")
+
+    store = WikiStore(tmp_path / "workspace")
+    first_result = store.import_knowledge_base(first, index_title="First Docs")
+    second_result = store.import_knowledge_base(second, index_title="Second Docs")
+
+    assert first_result.index_page.id != second_result.index_page.id
+    assert first_result.imported[0].page.id != second_result.imported[0].page.id
+    assert store.status()["pages"] == 4
+    assert store.search("first-root")[0].page.title == "First Guide"
+    assert store.search("second-root")[0].page.title == "Second Guide"
+
+
+def test_reindex_from_disk_reflects_manual_markdown_edits(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    page = store.upsert_page(
+        title="Editable Page",
+        content="Original indexed content.",
+        tags=["editable"],
+    )
+    page_path = store.page_path(page.id)
+    page_path.write_text(
+        page_path.read_text(encoding="utf-8").replace(
+            "Original indexed content.",
+            "Manual edit token reindex-visible.",
+        ),
+        encoding="utf-8",
+    )
+    manual_path = store.pages_dir / "manual-note.md"
+    manual_path.write_text("# Manual Note\n\nCreated directly as Markdown.", encoding="utf-8")
+
+    result = store.reindex_from_disk()
+
+    assert result["indexed"] == 2
+    assert store.search("reindex-visible")[0].page.title == "Editable Page"
+    assert store.search("directly as Markdown")[0].page.id == "manual-note"
+
+    manual_path.unlink()
+    removed = store.reindex_from_disk()
+    assert removed["removed_ids"] == ["manual-note"]
+    assert store.get_page("Manual Note") is None

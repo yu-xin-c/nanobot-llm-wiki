@@ -37,14 +37,62 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
         with urlopen(base_url + "/", timeout=5) as response:
             html = response.read().decode("utf-8")
         assert "NanoBot LLM Wiki" in html
+        assert "Memory Dashboard" in html
+        assert '<html lang="zh-CN">' in html
+        assert 'id="languageBtn"' in html
+        assert 'data-i18n="dashboard"' in html
+        assert "nanobot_llm_wiki_language_v1" in html
+        assert "const translations" in html
+        assert "记忆概览" in html
+        assert "healthBadge" in html
+        assert "Rebuild Index" in html
+        assert "Knowledge Base" in html
         assert "Drag nodes to arrange the graph" in html
         assert "Reset Layout" in html
+        assert "function graphNodeRadius" in html
+        assert 'const graphDotRadius = 8' in html
+        assert "lod-compact" in html
 
         status = _json_get(base_url + "/api/status")
         assert status["pages"] == 1
 
-        search = _json_get(base_url + "/api/search?q=browser")
-        assert search["results"][0]["page"]["title"] == "UI Smoke"
+        health = _json_get(base_url + "/api/doctor")
+        assert health["health"] == "unhealthy"
+        assert any(check["id"] == "memory_bridge" for check in health["checks"])
+
+        repaired = _json_request(base_url + "/api/install", method="POST", payload={})
+        assert repaired["memory_path"].endswith("memory/MEMORY.md")
+        assert _json_get(base_url + "/api/doctor")["health"] == "healthy"
+
+        page_path = store.page_path("ui-smoke")
+        page_path.write_text(
+            page_path.read_text(encoding="utf-8").replace(
+                "The browser UI can read this page.",
+                "Manual UI edit token.",
+            ),
+            encoding="utf-8",
+        )
+        reindex = _json_request(base_url + "/api/reindex", method="POST", payload={})
+        assert reindex["indexed"] == repaired["pages"]
+        assert _json_get(base_url + "/api/search?q=Manual%20UI%20edit")["results"][0]["page"]["title"] == "UI Smoke"
+
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        (raw_dir / "guide.md").write_text("# UI Import Guide\n\nImported through the UI.", encoding="utf-8")
+        imported = _json_request(
+            base_url + "/api/import",
+            method="POST",
+            payload={
+                "path": str(raw_dir),
+                "index_title": "UI Imported Docs",
+                "tags": "ui, imported",
+            },
+        )
+        assert imported["index_page"]["title"] == "UI Imported Docs"
+        assert imported["imported"][0]["page"]["title"] == "UI Import Guide"
+
+        search = _json_get(base_url + "/api/search?q=UI%20Smoke")
+        assert any(result["page"]["title"] == "UI Smoke" for result in search["results"])
 
         created = _json_request(
             base_url + "/api/pages",
@@ -72,8 +120,9 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
         assert link["from_page"]["title"] == "Created From UI"
 
         graph = _json_get(base_url + "/api/graph")
-        assert {node["title"] for node in graph["nodes"]} == {"UI Smoke", "Created From UI"}
-        assert graph["links"][0]["relation"] == "mentions"
+        graph_titles = {node["title"] for node in graph["nodes"]}
+        assert {"UI Smoke", "Created From UI", "UI Imported Docs", "UI Import Guide"}.issubset(graph_titles)
+        assert "mentions" in {link["relation"] for link in graph["links"]}
 
         deleted = _json_request(
             base_url + "/api/pages/" + quote("Created From UI"),

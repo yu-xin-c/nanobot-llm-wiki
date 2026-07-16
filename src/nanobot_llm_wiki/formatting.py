@@ -38,3 +38,31 @@ def format_page(page: WikiPage) -> str:
 
 def format_status(status: dict[str, Any]) -> str:
     return "\n".join(f"{key}: {value}" for key, value in status.items())
+
+
+def format_doctor(result: dict[str, Any]) -> str:
+    """Format structured diagnostics for a terminal or NanoBot tool response."""
+    labels = {"ok": "OK", "warning": "WARN", "error": "ERROR"}
+    lines = [
+        f"NanoBot LLM Wiki doctor: {result['health']} (version {result['version']})",
+        f"Workspace: {result['workspace']}",
+        "",
+    ]
+    for check in result["checks"]:
+        line = f"[{labels[check['status']]}] {check['label']}: {check['message']}"
+        if check.get("action") == "reindex":
+            line += " Fix: nanobot-wiki reindex"
+        elif check.get("action") == "install":
+            line += " Fix: nanobot-wiki install"
+        lines.append(line)
+    summary = result["summary"]
+    lines.extend(
+        [
+            "",
+            (
+                f"Summary: {summary['passed']} passed, {summary['warnings']} warning(s), "
+                f"{summary['errors']} error(s)"
+            ),
+        ]
+    )
+    return "\n".join(lines)

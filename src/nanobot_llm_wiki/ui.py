@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from nanobot_llm_wiki.diagnostics import diagnose_workspace
+from nanobot_llm_wiki.installer import install_workspace
 from nanobot_llm_wiki.storage import WikiPage, WikiStore
 
 
@@ -97,6 +99,9 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
             if parsed.path == "/api/status":
                 self._send_json(store.status())
                 return
+            if parsed.path == "/api/doctor":
+                self._send_json(diagnose_workspace(store.workspace))
+                return
             if parsed.path == "/api/graph":
                 query = parse_qs(parsed.query)
                 limit = int((query.get("limit") or ["200"])[0])
@@ -133,6 +138,40 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path == "/api/install":
+                self._send_json(install_workspace(store.workspace))
+                return
+            if parsed.path == "/api/reindex":
+                self._send_json(store.reindex_from_disk())
+                return
+            if parsed.path == "/api/import":
+                try:
+                    body = self._read_json()
+                    import_path = str(body.get("path") or "").strip()
+                    if not import_path:
+                        raise ValueError("path is required")
+                    result = store.import_knowledge_base(
+                        import_path,
+                        index_title=str(body.get("index_title") or "").strip() or None,
+                        tags=_split_csv(body.get("tags")),
+                        page_type=str(body.get("page_type") or "knowledge-doc").strip()
+                        or "knowledge-doc",
+                        relation=str(body.get("relation") or "contains").strip() or "contains",
+                        max_bytes=int(body.get("max_bytes") or 512_000),
+                    )
+                except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
+                    self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json({
+                    "raw_path": result.raw_path,
+                    "index_page": _page_to_dict(result.index_page),
+                    "imported": [
+                        {"raw_path": item.path, "page": _page_to_dict(item.page)}
+                        for item in result.imported
+                    ],
+                    "skipped": result.skipped,
+                })
+                return
             if parsed.path == "/api/links":
                 try:
                     body = self._read_json()
@@ -215,7 +254,7 @@ def run_ui(
 
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -223,20 +262,20 @@ INDEX_HTML = r"""<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      --bg: #eef2ef;
+      --bg: #f2f4f3;
       --surface: #ffffff;
-      --surface-soft: #f7f9f7;
-      --surface-strong: #e8eee9;
-      --line: #d5ded7;
-      --line-strong: #aebbb3;
-      --text: #111719;
-      --muted: #63706b;
-      --subtle: #84908b;
-      --teal: #0f766e;
-      --indigo: #4f46e5;
+      --surface-soft: #f7f8f7;
+      --surface-strong: #e9edeb;
+      --line: #dde3df;
+      --line-strong: #b9c4be;
+      --text: #17201c;
+      --muted: #65716b;
+      --subtle: #8a958f;
+      --teal: #17786e;
+      --indigo: #5c55c7;
       --danger: #b4233f;
-      --shadow: 0 18px 44px rgba(33, 43, 38, 0.10);
-      --shadow-soft: 0 8px 24px rgba(33, 43, 38, 0.07);
+      --shadow: 0 18px 42px rgba(38, 49, 44, 0.09);
+      --shadow-soft: 0 5px 18px rgba(38, 49, 44, 0.055);
     }
     * { box-sizing: border-box; }
     html {
@@ -246,9 +285,7 @@ INDEX_HTML = r"""<!doctype html>
     body {
       margin: 0;
       min-height: 100vh;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0) 280px),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0;
@@ -273,8 +310,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     button:hover {
       border-color: var(--line-strong);
-      background: #f8faf8;
-      box-shadow: var(--shadow-soft);
+      background: #f6f8f7;
+      box-shadow: 0 3px 10px rgba(38, 49, 44, 0.07);
     }
     button:active {
       transform: translateY(1px);
@@ -285,8 +322,8 @@ INDEX_HTML = r"""<!doctype html>
       color: white;
     }
     button.primary:hover {
-      border-color: #0b5f59;
-      background: #0b5f59;
+      border-color: #11675f;
+      background: #11675f;
     }
     button.danger {
       border-color: #efb4c0;
@@ -315,7 +352,7 @@ INDEX_HTML = r"""<!doctype html>
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: #fbfcfb;
+      background: #fcfdfc;
       color: var(--text);
       padding: 10px 11px;
       outline: none;
@@ -333,28 +370,28 @@ INDEX_HTML = r"""<!doctype html>
     }
     .app {
       display: grid;
-      grid-template-columns: minmax(310px, 382px) minmax(0, 1fr);
+      grid-template-columns: minmax(286px, 328px) minmax(0, 1fr);
       min-height: 100vh;
     }
     .sidebar {
       border-right: 1px solid var(--line);
-      background:
-        linear-gradient(180deg, #fcfdfc, #f3f6f3);
-      padding: 18px;
+      background: #f8faf8;
+      padding: 16px;
       min-width: 0;
       height: 100vh;
       position: sticky;
       top: 0;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 12px;
     }
     .workspace {
-      padding: 26px min(3vw, 36px);
+      padding: 24px min(3vw, 36px) 36px;
       min-width: 0;
     }
     .top {
-      display: flex;
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
       gap: 12px;
       align-items: flex-start;
     }
@@ -364,9 +401,9 @@ INDEX_HTML = r"""<!doctype html>
       width: 38px;
       height: 38px;
       flex: 0 0 38px;
-      border: 1px solid rgba(15, 118, 110, 0.28);
+      border: 1px solid rgba(23, 120, 110, 0.25);
       border-radius: 8px;
-      background: #e7f2ef;
+      background: #e8f2ef;
       color: var(--teal);
       font-weight: 800;
       font-size: 13px;
@@ -386,10 +423,22 @@ INDEX_HTML = r"""<!doctype html>
       overflow-wrap: anywhere;
     }
     .side-actions {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(48px, auto);
       gap: 6px;
-      flex-wrap: wrap;
-      margin-left: auto;
+      grid-column: 1 / -1;
+      width: 100%;
+    }
+    .side-actions button {
+      min-width: 0;
+      min-height: 34px;
+      padding-inline: 8px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+    .side-actions .language-toggle {
+      min-width: 48px;
+      color: var(--teal);
+      font-weight: 750;
     }
     .search {
       display: grid;
@@ -403,7 +452,10 @@ INDEX_HTML = r"""<!doctype html>
     .status {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
+      gap: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.66);
       color: var(--muted);
       font-size: 12px;
       overflow-wrap: anywhere;
@@ -411,11 +463,15 @@ INDEX_HTML = r"""<!doctype html>
     .status span {
       display: grid;
       gap: 2px;
-      min-height: 54px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.72);
+      min-height: 50px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
       padding: 8px 9px;
+    }
+    .status span:last-child {
+      border-right: 0;
     }
     .status strong {
       color: var(--text);
@@ -440,24 +496,30 @@ INDEX_HTML = r"""<!doctype html>
     }
     .list {
       display: grid;
-      gap: 8px;
-      max-height: calc(100vh - 214px);
+      gap: 5px;
+      flex: 1;
+      min-height: 0;
+      max-height: none;
+      align-content: start;
       overflow: auto;
       padding-right: 2px;
     }
     .item {
       display: grid;
-      gap: 6px;
+      grid-template-columns: minmax(0, 1fr);
+      justify-content: stretch;
+      align-items: stretch;
+      gap: 5px;
       width: 100%;
       text-align: left;
-      background: rgba(255, 255, 255, 0.84);
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid transparent;
       border-radius: 8px;
-      padding: 12px 12px 12px 14px;
-      border-color: rgba(255, 255, 255, 0.72);
-      box-shadow: 0 1px 0 rgba(33, 43, 38, 0.04);
+      padding: 10px 11px 10px 14px;
+      box-shadow: none;
       position: relative;
       overflow: hidden;
-      min-height: 92px;
+      min-height: 78px;
     }
     .item::before {
       content: "";
@@ -471,11 +533,13 @@ INDEX_HTML = r"""<!doctype html>
     }
     .item:hover {
       background: var(--surface);
-      transform: translateY(-1px);
+      border-color: var(--line);
+      transform: none;
     }
     .item.active {
-      border-color: rgba(79, 70, 229, 0.38);
-      box-shadow: 0 12px 28px rgba(79, 70, 229, 0.12);
+      border-color: rgba(92, 85, 199, 0.32);
+      background: #ffffff;
+      box-shadow: 0 8px 20px rgba(92, 85, 199, 0.09);
     }
     .item-title {
       font-weight: 650;
@@ -492,7 +556,7 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
       line-height: 1.35;
       display: -webkit-box;
-      -webkit-line-clamp: 2;
+      -webkit-line-clamp: 1;
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
@@ -501,13 +565,33 @@ INDEX_HTML = r"""<!doctype html>
       gap: 4px;
       flex-wrap: wrap;
     }
+    .item-match {
+      color: #3f4f49;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .item-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+    .item-actions .item-action {
+      min-height: 28px;
+      border-color: var(--line);
+      background: rgba(255, 255, 255, 0.76);
+      color: var(--muted);
+      font-size: 12px;
+      padding: 4px 8px;
+    }
     .tag {
       display: inline-flex;
       align-items: center;
       min-height: 20px;
       border-radius: 6px;
-      background: rgba(15, 118, 110, 0.10);
-      color: #0b625d;
+      background: #edf1ef;
+      color: #53615a;
       font-size: 11px;
       padding: 2px 7px;
     }
@@ -516,19 +600,19 @@ INDEX_HTML = r"""<!doctype html>
       align-items: flex-start;
       justify-content: space-between;
       gap: 14px;
-      margin-bottom: 18px;
-      max-width: 1280px;
+      margin-bottom: 16px;
+      max-width: 1400px;
     }
     .eyebrow {
       color: var(--teal);
       font-size: 12px;
       font-weight: 800;
       text-transform: uppercase;
-      margin-bottom: 7px;
+      margin-bottom: 6px;
     }
     .view-title {
       margin: 0;
-      font-size: 25px;
+      font-size: 27px;
       line-height: 1.1;
       max-width: 760px;
       overflow-wrap: anywhere;
@@ -544,7 +628,7 @@ INDEX_HTML = r"""<!doctype html>
       gap: 4px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: rgba(232, 238, 233, 0.82);
+      background: #e8ecea;
       padding: 3px;
       flex: 0 0 auto;
     }
@@ -556,7 +640,234 @@ INDEX_HTML = r"""<!doctype html>
     }
     .view-switch button.active {
       background: var(--surface);
-      box-shadow: 0 1px 2px rgba(33, 43, 38, 0.08);
+      color: var(--teal);
+      box-shadow: 0 1px 3px rgba(38, 49, 44, 0.10);
+    }
+    .dashboard {
+      display: grid;
+      gap: 12px;
+      max-width: 1400px;
+    }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .dashboard-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 1px 0 rgba(38, 49, 44, 0.03);
+      min-width: 0;
+      overflow: hidden;
+    }
+    .dashboard-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 54px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fafbfa;
+    }
+    .dashboard-panel-title {
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .dashboard-panel-kicker {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-bottom: 1px solid var(--line);
+    }
+    .metric {
+      display: grid;
+      gap: 6px;
+      min-height: 78px;
+      padding: 14px 16px;
+      border-right: 1px solid var(--line);
+    }
+    .metric:last-child {
+      border-right: 0;
+    }
+    .metric strong {
+      color: var(--text);
+      font-size: 25px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .health-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .health-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+      padding: 4px 9px;
+    }
+    .health-badge[data-health="healthy"] {
+      border-color: rgba(15, 118, 110, 0.28);
+      background: rgba(15, 118, 110, 0.08);
+      color: #0b625d;
+    }
+    .health-badge[data-health="attention"] {
+      border-color: rgba(180, 83, 9, 0.28);
+      background: rgba(245, 158, 11, 0.10);
+      color: #92400e;
+    }
+    .health-badge[data-health="unhealthy"] {
+      border-color: rgba(185, 28, 28, 0.28);
+      background: rgba(220, 38, 38, 0.08);
+      color: #991b1b;
+    }
+    .health-summary {
+      display: grid;
+      border-bottom: 1px solid var(--line);
+      background: #fafbfa;
+    }
+    .health-check {
+      display: grid;
+      grid-template-columns: 10px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 48px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .health-check:last-child {
+      border-bottom: 0;
+    }
+    .health-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #0f766e;
+    }
+    .health-check[data-status="warning"] .health-indicator {
+      background: #d97706;
+    }
+    .health-check[data-status="error"] .health-indicator {
+      background: #dc2626;
+    }
+    .health-copy {
+      min-width: 0;
+    }
+    .health-label {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+    .health-message {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .health-check button {
+      min-height: 30px;
+      padding: 5px 9px;
+    }
+    .quick-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 12px 16px;
+    }
+    .dashboard-list {
+      display: grid;
+    }
+    .dashboard-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      justify-content: stretch;
+      align-items: stretch;
+      gap: 5px;
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+      position: relative;
+      padding: 12px 16px 12px 36px;
+      text-align: left;
+      white-space: normal;
+    }
+    .dashboard-row:last-child {
+      border-bottom: 0;
+    }
+    .dashboard-row::before {
+      content: "";
+      position: absolute;
+      left: 17px;
+      top: 19px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--row-color, var(--indigo));
+      box-shadow: 0 0 0 3px rgba(92, 85, 199, 0.08);
+    }
+    .dashboard-row:hover {
+      background: #f7f9f8;
+      box-shadow: none;
+      transform: none;
+    }
+    .dashboard-row-title {
+      font-weight: 720;
+      overflow-wrap: anywhere;
+    }
+    .dashboard-row-meta,
+    .dashboard-row-preview {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .dashboard-tools {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+    .tool-form {
+      display: grid;
+      gap: 10px;
+    }
+    .tool-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+    .tool-result {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .divider {
+      height: 1px;
+      background: var(--line);
     }
     .editor {
       display: grid;
@@ -661,30 +972,30 @@ INDEX_HTML = r"""<!doctype html>
     .graph-panel {
       display: grid;
       max-width: 1480px;
-      border: 1px solid rgba(113, 139, 130, 0.28);
+      border: 1px solid #2b3532;
       border-radius: 8px;
-      background: #07100e;
-      color: #eef8f3;
-      box-shadow: 0 26px 70px rgba(15, 23, 20, 0.24);
+      background: #0c1211;
+      color: #eff7f3;
+      box-shadow: 0 24px 58px rgba(20, 29, 26, 0.20);
       overflow: hidden;
     }
     .graph-panel button {
-      background: rgba(255, 255, 255, 0.075);
-      border-color: rgba(181, 209, 198, 0.20);
+      background: rgba(255, 255, 255, 0.055);
+      border-color: rgba(194, 211, 204, 0.17);
       color: #edf8f3;
     }
     .graph-panel button:hover {
-      background: rgba(255, 255, 255, 0.13);
-      border-color: rgba(181, 209, 198, 0.38);
-      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
+      background: rgba(255, 255, 255, 0.10);
+      border-color: rgba(194, 211, 204, 0.32);
+      box-shadow: none;
     }
     .graph-panel input,
     .graph-panel select {
       width: 100%;
       min-height: 36px;
-      border: 1px solid rgba(181, 209, 198, 0.22);
+      border: 1px solid rgba(194, 211, 204, 0.18);
       border-radius: 6px;
-      background: rgba(255, 255, 255, 0.075);
+      background: rgba(255, 255, 255, 0.05);
       color: #eef8f3;
       outline: none;
       padding: 8px 10px;
@@ -694,8 +1005,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     .graph-panel input:focus,
     .graph-panel select:focus {
-      border-color: #52d7c7;
-      box-shadow: 0 0 0 3px rgba(82, 215, 199, 0.16);
+      border-color: #61cdbf;
+      box-shadow: 0 0 0 3px rgba(97, 205, 191, 0.13);
     }
     .graph-panel select option {
       color: #111719;
@@ -705,7 +1016,7 @@ INDEX_HTML = r"""<!doctype html>
       min-height: 0;
       padding: 0 16px 14px;
       color: rgba(224, 239, 233, 0.62);
-      background: #07100e;
+      background: #0c1211;
     }
     .graph-top {
       display: flex;
@@ -713,11 +1024,9 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 12px;
       flex-wrap: wrap;
-      padding: 15px 16px;
-      border-bottom: 1px solid rgba(181, 209, 198, 0.16);
-      background:
-        radial-gradient(circle at 16% 0%, rgba(82, 215, 199, 0.22), transparent 36%),
-        linear-gradient(180deg, rgba(16, 28, 25, 0.98), rgba(8, 17, 15, 0.98));
+      padding: 13px 15px;
+      border-bottom: 1px solid rgba(194, 211, 204, 0.13);
+      background: #111817;
     }
     .graph-heading {
       display: grid;
@@ -736,10 +1045,10 @@ INDEX_HTML = r"""<!doctype html>
       display: inline-flex;
       align-items: center;
       min-height: 22px;
-      border: 1px solid rgba(82, 215, 199, 0.28);
+      border: 1px solid rgba(97, 205, 191, 0.25);
       border-radius: 6px;
-      background: rgba(82, 215, 199, 0.10);
-      color: #9df2e4;
+      background: rgba(97, 205, 191, 0.08);
+      color: #9ce5dc;
       font-size: 11px;
       font-weight: 800;
       padding: 2px 8px;
@@ -754,23 +1063,22 @@ INDEX_HTML = r"""<!doctype html>
     }
     .graph-workbench {
       display: grid;
-      grid-template-columns: 224px minmax(0, 1fr);
-      min-height: 682px;
-      background: #07100e;
+      grid-template-columns: 196px minmax(0, 1fr);
+      min-height: 640px;
+      background: #0c1211;
     }
     .graph-rail,
     .graph-inspector {
       min-width: 0;
-      padding: 15px;
-      background:
-        linear-gradient(180deg, rgba(18, 31, 28, 0.96), rgba(9, 18, 16, 0.98));
+      padding: 14px;
+      background: #111817;
     }
     .graph-rail {
-      border-right: 1px solid rgba(181, 209, 198, 0.14);
+      border-right: 1px solid rgba(194, 211, 204, 0.12);
     }
     .graph-inspector {
       grid-column: 1 / -1;
-      border-top: 1px solid rgba(181, 209, 198, 0.14);
+      border-top: 1px solid rgba(194, 211, 204, 0.12);
     }
     .graph-panel-label {
       color: rgba(218, 240, 232, 0.66);
@@ -785,7 +1093,7 @@ INDEX_HTML = r"""<!doctype html>
       gap: 9px;
       padding-bottom: 15px;
       margin-bottom: 15px;
-      border-bottom: 1px solid rgba(181, 209, 198, 0.12);
+      border-bottom: 1px solid rgba(194, 211, 204, 0.10);
     }
     .graph-control-block:empty {
       display: block;
@@ -814,16 +1122,16 @@ INDEX_HTML = r"""<!doctype html>
       gap: 8px;
     }
     .graph-summary div {
-      min-height: 58px;
-      border: 1px solid rgba(181, 209, 198, 0.14);
+      min-height: 54px;
+      border: 1px solid rgba(194, 211, 204, 0.11);
       border-radius: 8px;
-      background: rgba(255, 255, 255, 0.055);
+      background: rgba(255, 255, 255, 0.035);
       padding: 9px;
     }
     .graph-summary strong {
       display: block;
       color: #f6fffb;
-      font-size: 20px;
+      font-size: 19px;
       line-height: 1;
       font-variant-numeric: tabular-nums;
     }
@@ -843,15 +1151,15 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: flex-start;
       width: 100%;
       min-height: 34px;
-      border-color: rgba(181, 209, 198, 0.12);
-      background: rgba(255, 255, 255, 0.045);
+      border-color: transparent;
+      background: rgba(255, 255, 255, 0.025);
       color: rgba(239, 250, 246, 0.82);
       padding: 6px 8px;
       text-align: left;
     }
     .graph-legend button.active {
-      border-color: rgba(82, 215, 199, 0.45);
-      background: rgba(82, 215, 199, 0.13);
+      border-color: rgba(97, 205, 191, 0.34);
+      background: rgba(97, 205, 191, 0.10);
       color: #f6fffb;
     }
     .graph-legend span {
@@ -869,15 +1177,13 @@ INDEX_HTML = r"""<!doctype html>
     }
     .graph-shell {
       position: relative;
-      min-height: 682px;
+      min-height: 640px;
       border: 0;
-      background:
-        radial-gradient(circle at 28% 22%, rgba(82, 215, 199, 0.18), transparent 27%),
-        radial-gradient(circle at 76% 72%, rgba(124, 92, 255, 0.16), transparent 30%),
-        linear-gradient(rgba(91, 121, 110, 0.16) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(91, 121, 110, 0.16) 1px, transparent 1px),
-        #07100e;
-      background-size: auto, auto, 34px 34px, 34px 34px, auto;
+      background-color: #0b1110;
+      background-image:
+        linear-gradient(rgba(135, 156, 148, 0.10) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(135, 156, 148, 0.10) 1px, transparent 1px);
+      background-size: 40px 40px;
       overflow: hidden;
     }
     .graph-canvas-status {
@@ -895,9 +1201,9 @@ INDEX_HTML = r"""<!doctype html>
       display: inline-flex;
       align-items: center;
       min-height: 25px;
-      border: 1px solid rgba(181, 209, 198, 0.17);
+      border: 1px solid rgba(194, 211, 204, 0.14);
       border-radius: 6px;
-      background: rgba(7, 16, 14, 0.78);
+      background: rgba(11, 17, 16, 0.80);
       color: rgba(230, 247, 241, 0.72);
       font-size: 11px;
       font-weight: 760;
@@ -907,7 +1213,7 @@ INDEX_HTML = r"""<!doctype html>
     #graphSvg {
       display: block;
       width: 100%;
-      height: 682px;
+      height: 640px;
       touch-action: none;
       user-select: none;
       cursor: grab;
@@ -920,12 +1226,12 @@ INDEX_HTML = r"""<!doctype html>
       right: 14px;
       bottom: 14px;
       z-index: 3;
-      width: 184px;
-      height: 122px;
-      border: 1px solid rgba(181, 209, 198, 0.22);
+      width: 168px;
+      height: 110px;
+      border: 1px solid rgba(194, 211, 204, 0.17);
       border-radius: 8px;
-      background: rgba(7, 16, 14, 0.82);
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.30);
+      background: rgba(11, 17, 16, 0.86);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
       overflow: hidden;
       backdrop-filter: blur(14px);
     }
@@ -936,11 +1242,11 @@ INDEX_HTML = r"""<!doctype html>
       cursor: crosshair;
     }
     .minimap-link {
-      stroke: rgba(159, 199, 185, 0.28);
+      stroke: rgba(177, 197, 189, 0.24);
       stroke-width: 1;
     }
     .minimap-node {
-      fill: rgba(82, 215, 199, 0.72);
+      fill: rgba(97, 205, 191, 0.72);
       stroke: rgba(239, 250, 246, 0.52);
       stroke-width: 0.8;
     }
@@ -948,32 +1254,33 @@ INDEX_HTML = r"""<!doctype html>
       fill: #fbbf24;
     }
     .minimap-viewport {
-      fill: rgba(82, 215, 199, 0.12);
-      stroke: #67e8f9;
+      fill: rgba(97, 205, 191, 0.10);
+      stroke: #7ad8cc;
       stroke-width: 1.2;
     }
     .graph-link-glow {
       fill: none;
-      stroke: #48d9ca;
-      stroke-width: 10;
+      stroke: #61cdbf;
+      stroke-width: 6;
       stroke-linecap: round;
-      opacity: 0.13;
+      opacity: 0.045;
     }
     .graph-link {
       fill: none;
-      stroke: rgba(165, 207, 191, 0.64);
-      stroke-width: 1.75;
+      stroke: rgba(177, 197, 189, 0.52);
+      stroke-width: 1.35;
       stroke-linecap: round;
-      opacity: 0.82;
+      opacity: 0.78;
     }
     .graph-link.active {
-      stroke: #67e8f9;
-      stroke-width: 2.25;
+      stroke: #7ad8cc;
+      stroke-width: 2;
       opacity: 1;
     }
     .graph-link-glow.active {
-      stroke: #67e8f9;
-      opacity: 0.30;
+      stroke: #7ad8cc;
+      stroke-width: 8;
+      opacity: 0.20;
     }
     .graph-link.muted,
     .graph-link-glow.muted,
@@ -981,14 +1288,14 @@ INDEX_HTML = r"""<!doctype html>
       opacity: 0.10;
     }
     .graph-relation-pill rect {
-      fill: rgba(7, 16, 14, 0.92);
-      stroke: rgba(181, 209, 198, 0.25);
+      fill: rgba(11, 17, 16, 0.94);
+      stroke: rgba(194, 211, 204, 0.18);
       stroke-width: 1;
     }
     .graph-relation {
-      fill: rgba(229, 248, 241, 0.82);
-      font-size: 11px;
-      font-weight: 750;
+      fill: rgba(231, 242, 237, 0.76);
+      font-size: 9.8px;
+      font-weight: 700;
       text-anchor: middle;
       dominant-baseline: middle;
     }
@@ -1005,57 +1312,56 @@ INDEX_HTML = r"""<!doctype html>
       filter: none;
       pointer-events: all;
     }
-    .graph-node .graph-card-shadow {
+    .graph-node .graph-dot-shadow {
       fill: #000000;
-      opacity: 0.30;
+      opacity: 0.28;
     }
-    .graph-node .graph-card {
-      fill: rgba(18, 31, 28, 0.96);
-      stroke: rgba(181, 209, 198, 0.28);
-      stroke-width: 1.2;
+    .graph-node .graph-dot-halo {
+      fill: none;
+      stroke: var(--node-color, rgba(194, 211, 204, 0.34));
+      stroke-width: 1;
+      opacity: 0.20;
     }
-    .graph-node .graph-band {
-      opacity: 0.95;
+    .graph-node .graph-dot {
+      stroke: rgba(248, 253, 251, 0.82);
+      stroke-width: 1.5;
     }
-    .graph-node .graph-orbit {
-      fill: rgba(255, 255, 255, 0.065);
-      stroke-width: 1.2;
+    .graph-node.active .graph-dot {
+      stroke: #f6fffb;
+      stroke-width: 2;
     }
-    .graph-node.active .graph-card {
-      fill: rgba(13, 47, 43, 0.98);
-      stroke: #67e8f9;
-      stroke-width: 1.9;
+    .graph-node.active .graph-dot-halo {
+      stroke: var(--node-color, #7ad8cc);
+      stroke-width: 1.6;
+      opacity: 1;
     }
-    .graph-node.neighbor .graph-card {
-      stroke: rgba(104, 211, 194, 0.58);
+    .graph-node.neighbor .graph-dot-halo {
+      stroke: var(--node-color, #61cdbf);
+      opacity: 0.56;
     }
     .graph-node.muted {
       opacity: 0.20;
     }
     .graph-node .graph-title {
-      fill: #f6fffb;
-      font-size: 12px;
-      font-weight: 800;
+      fill: rgba(246, 255, 251, 0.92);
+      font-size: 11.2px;
+      font-weight: 720;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: rgba(11, 17, 16, 0.90);
+      stroke-width: 2.8px;
       pointer-events: none;
     }
     .graph-node .graph-meta {
-      fill: rgba(224, 239, 233, 0.58);
-      font-size: 10.5px;
+      fill: rgba(224, 239, 233, 0.54);
+      font-size: 9.4px;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: rgba(11, 17, 16, 0.86);
+      stroke-width: 2.2px;
       pointer-events: none;
     }
-    .graph-node .graph-chip-bg {
-      fill: rgba(255, 255, 255, 0.07);
-      stroke: rgba(181, 209, 198, 0.16);
-      stroke-width: 1;
-    }
-    .graph-node .graph-chip-text {
-      fill: rgba(237, 248, 244, 0.76);
-      font-size: 10px;
-      font-weight: 700;
-      pointer-events: none;
-    }
-    #graphViewport.lod-minimal .graph-chip-bg,
-    #graphViewport.lod-minimal .graph-chip-text,
+    #graphViewport.lod-minimal .graph-title,
     #graphViewport.lod-minimal .graph-meta,
     #graphViewport.lod-minimal .graph-relation-pill {
       display: none;
@@ -1063,11 +1369,15 @@ INDEX_HTML = r"""<!doctype html>
     #graphViewport.lod-minimal .graph-node .graph-title {
       font-size: 11px;
     }
+    #graphViewport.lod-compact .graph-meta,
+    #graphViewport.lod-compact .graph-relation-pill {
+      display: none;
+    }
     .zoom-controls {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      border: 1px solid rgba(181, 209, 198, 0.20);
+      border: 1px solid rgba(194, 211, 204, 0.16);
       border-radius: 8px;
       background: rgba(255, 255, 255, 0.055);
       padding: 3px;
@@ -1092,11 +1402,23 @@ INDEX_HTML = r"""<!doctype html>
       font-variant-numeric: tabular-nums;
     }
     .graph-inspector-title {
+      display: flex;
+      align-items: center;
+      gap: 9px;
       margin: 0;
       color: #f6fffb;
       font-size: 18px;
       line-height: 1.18;
       overflow-wrap: anywhere;
+    }
+    .graph-inspector-title::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      flex: 0 0 10px;
+      border-radius: 50%;
+      background: var(--node-color, #61cdbf);
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.055);
     }
     .graph-inspector-meta {
       margin-top: 7px;
@@ -1108,7 +1430,7 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       place-items: center;
       min-height: 164px;
-      border: 1px solid rgba(181, 209, 198, 0.13);
+      border: 1px solid rgba(194, 211, 204, 0.11);
       border-radius: 8px;
       color: rgba(224, 239, 233, 0.48);
       background: rgba(255, 255, 255, 0.04);
@@ -1123,7 +1445,7 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 3px;
       padding-bottom: 10px;
-      border-bottom: 1px solid rgba(181, 209, 198, 0.11);
+      border-bottom: 1px solid rgba(194, 211, 204, 0.10);
     }
     .graph-detail-list dt {
       color: rgba(224, 239, 233, 0.48);
@@ -1145,8 +1467,8 @@ INDEX_HTML = r"""<!doctype html>
       margin-top: 10px;
     }
     .graph-tag-stack .tag {
-      background: rgba(82, 215, 199, 0.13);
-      color: #9df2e4;
+      background: rgba(97, 205, 191, 0.10);
+      color: #9ce5dc;
     }
     .graph-link-stack button {
       justify-content: flex-start;
@@ -1161,14 +1483,19 @@ INDEX_HTML = r"""<!doctype html>
       width: 100%;
       min-height: 56px;
     }
-    @media (min-width: 1840px) {
+    @media (min-width: 1360px) {
       .graph-workbench {
-        grid-template-columns: 224px minmax(0, 1fr) 288px;
+        grid-template-columns: 190px minmax(0, 1fr) 238px;
       }
       .graph-inspector {
         grid-column: auto;
-        border-left: 1px solid rgba(181, 209, 198, 0.14);
+        border-left: 1px solid rgba(194, 211, 204, 0.12);
         border-top: 0;
+      }
+    }
+    @media (min-width: 1840px) {
+      .graph-workbench {
+        grid-template-columns: 210px minmax(0, 1fr) 276px;
       }
     }
     @media (max-width: 980px) {
@@ -1176,23 +1503,43 @@ INDEX_HTML = r"""<!doctype html>
       .sidebar {
         position: static;
         height: auto;
+        padding: 14px;
+        gap: 10px;
         border-right: 0;
         border-bottom: 1px solid var(--line);
       }
-      .list { max-height: 340px; }
+      .list {
+        display: flex;
+        flex: none;
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0 0 4px;
+        scroll-snap-type: x proximity;
+      }
+      .item {
+        flex: 0 0 min(274px, calc(100vw - 32px));
+        min-height: 76px;
+        scroll-snap-align: start;
+      }
       .row { grid-template-columns: 1fr; }
       .meta-grid { grid-template-columns: 1fr; }
       .wide-field { grid-column: auto; }
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric:nth-child(2n) { border-right: 0; }
+      .metric:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
       .editor { grid-template-columns: 1fr; }
       .page-inspector { border-left: 0; border-top: 1px solid var(--line); }
       .workbar { display: grid; }
       .graph-workbench { grid-template-columns: 1fr; }
+      .graph-shell { order: -1; }
       .graph-rail,
       .graph-inspector {
         grid-column: auto;
         border-left: 0;
         border-right: 0;
-        border-bottom: 1px solid rgba(181, 209, 198, 0.14);
+        border-bottom: 1px solid rgba(194, 211, 204, 0.12);
       }
       .graph-shell,
       #graphSvg {
@@ -1200,14 +1547,29 @@ INDEX_HTML = r"""<!doctype html>
         height: 560px;
       }
     }
+    @media (min-width: 621px) and (max-width: 980px) {
+      .top {
+        grid-template-columns: 38px minmax(160px, 1fr) minmax(244px, auto);
+        align-items: center;
+      }
+      .side-actions {
+        grid-column: auto;
+        width: auto;
+      }
+    }
     @media (max-width: 620px) {
       .workspace { padding: 18px; }
-      .top { display: grid; grid-template-columns: 38px 1fr; }
-      .side-actions { grid-column: 1 / -1; margin-left: 0; }
-      .search { grid-template-columns: 1fr; }
+      .dashboard-panel-header { align-items: flex-start; flex-wrap: wrap; }
+      .health-actions { justify-content: flex-start; }
+      .health-check { grid-template-columns: 10px minmax(0, 1fr); }
+      .health-check button { grid-column: 2; justify-self: start; }
+      .search { grid-template-columns: minmax(0, 1fr) auto; }
       .status { grid-template-columns: 1fr 1fr 1fr; }
       .view-switch { width: 100%; }
       .view-switch button { flex: 1; }
+      .item { min-height: 70px; }
+      .item-preview { display: none; }
+      .tool-row { grid-template-columns: 1fr; }
       .editor-main, .page-inspector { padding: 16px; }
       textarea { min-height: 330px; }
       .graph-top { align-items: stretch; }
@@ -1224,88 +1586,158 @@ INDEX_HTML = r"""<!doctype html>
     <aside class="sidebar">
       <div class="top">
         <div class="brand-mark">NB</div>
-        <div class="brand">NanoBot LLM Wiki<div class="brand-subtitle">Local memory workspace</div></div>
+        <div class="brand">NanoBot LLM Wiki<div class="brand-subtitle" data-i18n="brandSubtitle">本地记忆工作区</div></div>
         <div class="side-actions">
-          <button id="newBtn" title="New page"><span class="button-mark">+</span>New</button>
-          <button id="graphBtn" class="ghost" title="Graph view">Graph</button>
+          <button id="homeBtn" class="ghost" title="概览" data-i18n="home" data-i18n-title="dashboard">首页</button>
+          <button id="newBtn" title="新建页面" data-i18n-title="newPage"><span class="button-mark">+</span><span data-i18n="new">新建</span></button>
+          <button id="graphBtn" class="ghost" title="图谱视图" data-i18n="graph" data-i18n-title="graphView">图谱</button>
+          <button id="languageBtn" class="ghost language-toggle" type="button" title="Switch to English" aria-label="Switch to English">EN</button>
         </div>
       </div>
       <div class="search">
-        <input id="searchInput" placeholder="Search titles, tags, aliases">
-        <button id="searchBtn">Search</button>
+        <input id="searchInput" placeholder="搜索标题、标签和别名" data-i18n-placeholder="searchPlaceholder">
+        <button id="searchBtn" data-i18n="search">搜索</button>
       </div>
       <div id="status" class="status"></div>
-      <div class="list-heading"><span>Pages</span><span id="listCount">0</span></div>
+      <div class="list-heading"><span data-i18n="pages">页面</span><span id="listCount">0</span></div>
       <div id="pageList" class="list"></div>
     </aside>
     <main class="workspace">
       <div class="workbar">
         <div>
-          <div class="eyebrow">Knowledge Console</div>
-          <h1 id="viewTitle" class="view-title">Memory Editor</h1>
-          <div id="viewSubtitle" class="view-subtitle">Local durable memory</div>
+          <div class="eyebrow" data-i18n="knowledgeConsole">知识控制台</div>
+          <h1 id="viewTitle" class="view-title">记忆概览</h1>
+          <div id="viewSubtitle" class="view-subtitle">本地持久记忆</div>
         </div>
         <div class="view-switch">
-          <button type="button" id="editorTab" class="active">Editor</button>
-          <button type="button" id="graphTab">Graph</button>
+          <button type="button" id="dashboardTab" class="active" data-i18n="dashboard">概览</button>
+          <button type="button" id="editorTab" data-i18n="editor">编辑器</button>
+          <button type="button" id="graphTab" data-i18n="graph">图谱</button>
         </div>
       </div>
-      <form id="editor" class="editor">
+      <section id="dashboardPanel" class="dashboard">
+        <div class="dashboard-panel">
+          <div class="dashboard-panel-header">
+            <div>
+              <div class="dashboard-panel-title" data-i18n="memoryHealth">记忆健康</div>
+              <div id="workspacePath" class="dashboard-panel-kicker">工作区</div>
+            </div>
+            <div class="health-actions">
+              <span id="healthBadge" class="health-badge">检查中</span>
+              <button type="button" id="dashboardRefreshBtn" data-i18n="refresh">刷新</button>
+            </div>
+          </div>
+          <div id="metricGrid" class="metric-grid"></div>
+          <div id="healthSummary" class="health-summary"></div>
+          <div class="quick-actions">
+            <button type="button" id="quickNewBtn" class="primary" data-i18n="newMemory">新建记忆</button>
+            <button type="button" id="quickGraphBtn" data-i18n="graph">图谱</button>
+            <button type="button" id="quickReindexBtn" data-i18n="rebuildIndex">重建索引</button>
+          </div>
+        </div>
+        <div class="dashboard-grid">
+          <div class="dashboard-panel">
+            <div class="dashboard-panel-header">
+              <div>
+                <div class="dashboard-panel-title" data-i18n="recentPages">最近页面</div>
+                <div id="recentPagesMeta" class="dashboard-panel-kicker">0 个页面</div>
+              </div>
+              <button type="button" id="openFirstRecentBtn" data-i18n="openLatest">打开最新</button>
+            </div>
+            <div id="recentPages" class="dashboard-list"></div>
+          </div>
+          <div class="dashboard-panel">
+            <div class="dashboard-panel-header">
+              <div>
+                <div class="dashboard-panel-title" data-i18n="knowledgeBase">知识库</div>
+                <div id="toolStatus" class="dashboard-panel-kicker">就绪</div>
+              </div>
+            </div>
+            <div class="dashboard-tools">
+              <div class="tool-form">
+                <div class="field">
+                  <label for="importPath" data-i18n="path">路径</label>
+                  <input id="importPath">
+                </div>
+                <div class="field">
+                  <label for="importTitle" data-i18n="indexTitle">索引标题</label>
+                  <input id="importTitle">
+                </div>
+                <div class="field">
+                  <label for="importTags" data-i18n="tags">标签</label>
+                  <input id="importTags">
+                </div>
+                <div class="tool-row">
+                  <input id="importMaxBytes" type="number" min="1" value="512000" aria-label="最大字节数" data-i18n-aria-label="maxBytes">
+                  <button type="button" id="importBtn" class="primary" data-i18n="import">导入</button>
+                </div>
+                <div id="importResult" class="tool-result"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="tool-form">
+                <button type="button" id="reindexBtn" data-i18n="rebuildIndex">重建索引</button>
+                <div id="reindexResult" class="tool-result"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <form id="editor" class="editor hidden">
         <div class="editor-main">
           <input type="hidden" id="pageId">
-          <div class="section-label">Page Details</div>
+          <div class="section-label" data-i18n="pageDetails">页面信息</div>
           <div class="meta-grid">
             <div class="field wide-field">
-              <label for="title">Title</label>
+              <label for="title" data-i18n="title">标题</label>
               <input id="title" required>
             </div>
             <div class="field">
-              <label for="pageType">Type</label>
+              <label for="pageType" data-i18n="type">类型</label>
               <input id="pageType" value="note">
             </div>
             <div class="field wide-field">
-              <label for="tags">Tags</label>
+              <label for="tags" data-i18n="tags">标签</label>
               <input id="tags">
             </div>
             <div class="field">
-              <label for="confidence">Confidence</label>
+              <label for="confidence" data-i18n="confidence">置信度</label>
               <input id="confidence" type="number" min="0" max="1" step="0.01" value="0.70">
             </div>
           </div>
           <div class="field">
-            <label for="aliases">Aliases</label>
+            <label for="aliases" data-i18n="aliases">别名</label>
             <input id="aliases">
           </div>
           <div class="field">
             <label for="content">Markdown</label>
             <textarea id="content"></textarea>
           </div>
-          <div class="section-label">Relationship</div>
+          <div class="section-label" data-i18n="relationship">页面关系</div>
           <div class="row">
             <div class="field">
-              <label for="linkTarget">Link To</label>
-              <input id="linkTarget" placeholder="Page title or id">
+              <label for="linkTarget" data-i18n="linkTo">链接至</label>
+              <input id="linkTarget" placeholder="页面标题或 ID" data-i18n-placeholder="pageTitleOrId">
             </div>
             <div class="field">
-              <label for="linkRelation">Relation</label>
+              <label for="linkRelation" data-i18n="relation">关系类型</label>
               <input id="linkRelation" value="related">
             </div>
           </div>
           <div class="toolbar">
-            <button class="primary" type="submit">Save</button>
-            <button type="button" id="linkBtn">Link</button>
-            <button type="button" id="refreshBtn">Refresh</button>
-            <button class="danger" type="button" id="archiveBtn">Archive</button>
+            <button class="primary" type="submit" data-i18n="save">保存</button>
+            <button type="button" id="linkBtn" data-i18n="link">创建关系</button>
+            <button type="button" id="refreshBtn" data-i18n="refresh">刷新</button>
+            <button class="danger" type="button" id="archiveBtn" data-i18n="archive">归档</button>
           </div>
           <div id="message" class="message"></div>
         </div>
         <aside class="page-inspector">
-          <div class="inspector-heading">Page Signals</div>
+          <div class="inspector-heading" data-i18n="pageSignals">页面信号</div>
           <dl class="signal-list">
-            <div><dt>ID</dt><dd id="detailId">New page</dd></div>
-            <div><dt>Updated</dt><dd id="detailUpdated">Not saved</dd></div>
-            <div><dt>Confidence</dt><dd id="detailConfidence">0.70</dd></div>
-            <div><dt>Sources</dt><dd id="detailSources">0 cursors</dd></div>
+            <div><dt>ID</dt><dd id="detailId">新页面</dd></div>
+            <div><dt data-i18n="updated">更新时间</dt><dd id="detailUpdated">未保存</dd></div>
+            <div><dt data-i18n="confidence">置信度</dt><dd id="detailConfidence">0.70</dd></div>
+            <div><dt data-i18n="sources">来源</dt><dd id="detailSources">0 个游标</dd></div>
           </dl>
           <div id="detailTags" class="signal-tags"></div>
         </aside>
@@ -1314,71 +1746,71 @@ INDEX_HTML = r"""<!doctype html>
         <div class="graph-top">
           <div class="graph-heading">
             <div class="graph-titleline">
-              <div class="section-label">Knowledge Graph</div>
-              <span class="graph-perspective">Local Memory</span>
+              <div class="section-label" data-i18n="knowledgeGraph">知识图谱</div>
+              <span class="graph-perspective" data-i18n="localMemory">本地记忆</span>
             </div>
-            <div id="graphStats" class="graph-stats">0 pages / 0 links</div>
+            <div id="graphStats" class="graph-stats">0 个页面 / 0 条关系</div>
           </div>
           <div class="toolbar graph-toolbar">
-            <button type="button" id="backToEditorBtn">Editor</button>
-            <button type="button" id="refreshGraphBtn">Refresh</button>
-            <button type="button" id="fitGraphBtn">Fit</button>
-            <button type="button" id="resetGraphBtn">Reset Layout</button>
-            <div class="zoom-controls" aria-label="Graph zoom controls">
-              <button type="button" id="zoomOutBtn" aria-label="Zoom out">-</button>
+            <button type="button" id="backToEditorBtn" data-i18n="editor">编辑器</button>
+            <button type="button" id="refreshGraphBtn" data-i18n="refresh">刷新</button>
+            <button type="button" id="fitGraphBtn" data-i18n="fit">适应画布</button>
+            <button type="button" id="resetGraphBtn" data-i18n="resetLayout">重置布局</button>
+            <div class="zoom-controls" aria-label="图谱缩放控制" data-i18n-aria-label="graphZoomControls">
+              <button type="button" id="zoomOutBtn" aria-label="缩小" data-i18n-aria-label="zoomOut">-</button>
               <span id="zoomValue" class="zoom-value">100%</span>
-              <button type="button" id="zoomInBtn" aria-label="Zoom in">+</button>
-              <button type="button" id="zoomResetBtn" aria-label="Reset zoom">1:1</button>
+              <button type="button" id="zoomInBtn" aria-label="放大" data-i18n-aria-label="zoomIn">+</button>
+              <button type="button" id="zoomResetBtn" aria-label="重置缩放" data-i18n-aria-label="resetZoom">1:1</button>
             </div>
           </div>
         </div>
         <div class="graph-workbench">
           <aside class="graph-rail">
-            <div class="graph-panel-label">Explore</div>
+            <div class="graph-panel-label" data-i18n="explore">探索</div>
             <div class="graph-control-block">
               <div class="graph-search-row">
-                <input id="graphSearch" type="search" placeholder="Search graph" aria-label="Search graph">
-                <button type="button" id="graphFocusBtn">Focus</button>
+                <input id="graphSearch" type="search" placeholder="搜索图谱" aria-label="搜索图谱" data-i18n-placeholder="searchGraph" data-i18n-aria-label="searchGraph">
+                <button type="button" id="graphFocusBtn" data-i18n="focus">聚焦</button>
               </div>
               <div class="graph-control-row">
-                <select id="graphTypeFilter" aria-label="Filter by page type">
-                  <option value="all">All types</option>
+                <select id="graphTypeFilter" aria-label="按页面类型筛选" data-i18n-aria-label="filterByPageType">
+                  <option value="all">全部类型</option>
                 </select>
-                <button type="button" id="graphClearFocusBtn">Clear</button>
+                <button type="button" id="graphClearFocusBtn" data-i18n="clear">清除</button>
               </div>
             </div>
             <div id="graphSummary" class="graph-summary"></div>
             <div class="graph-control-block"></div>
-            <div class="graph-panel-label">Legend</div>
+            <div class="graph-panel-label" data-i18n="legend">图例</div>
             <div id="graphLegend" class="graph-legend"></div>
           </aside>
-          <div class="graph-shell" title="Wheel to zoom. Drag empty canvas to pan. Drag nodes to arrange the graph.">
+          <div class="graph-shell" title="滚轮缩放，拖动空白区域平移，拖动节点调整布局。" data-i18n-title="graphHelp">
             <div class="graph-canvas-status">
-              <span id="graphFocusLabel">All nodes</span>
-              <span id="graphDensityLabel">0 visible</span>
+              <span id="graphFocusLabel">全部节点</span>
+              <span id="graphDensityLabel">0 个可见</span>
             </div>
-            <svg id="graphSvg" role="img" aria-label="Wiki page graph" aria-description="Click a node to inspect it. Double-click a node to open it in the editor."></svg>
-            <div class="graph-minimap" aria-label="Graph minimap">
-              <svg id="graphMiniMap" role="img" aria-label="Graph minimap"></svg>
+            <svg id="graphSvg" role="img" aria-label="Wiki 页面图谱" aria-description="单击节点查看详情，双击节点在编辑器中打开。" data-i18n-aria-label="wikiPageGraph"></svg>
+            <div class="graph-minimap" aria-label="图谱小地图" data-i18n-aria-label="graphMinimap">
+              <svg id="graphMiniMap" role="img" aria-label="图谱小地图" data-i18n-aria-label="graphMinimap"></svg>
             </div>
           </div>
           <aside class="graph-inspector">
-            <div class="graph-panel-label">Inspector</div>
-            <div id="graphInspectorEmpty" class="graph-empty-state">No selection</div>
+            <div class="graph-panel-label" data-i18n="inspector">检查器</div>
+            <div id="graphInspectorEmpty" class="graph-empty-state" data-i18n="noNodeSelected">未选择节点</div>
             <div id="graphInspectorContent" class="hidden">
               <h2 id="graphDetailTitle" class="graph-inspector-title"></h2>
               <div id="graphDetailMeta" class="graph-inspector-meta"></div>
               <dl class="graph-detail-list">
                 <div><dt>ID</dt><dd id="graphDetailId"></dd></div>
-                <div><dt>Connections</dt><dd id="graphDetailDegree"></dd></div>
-                <div><dt>Updated</dt><dd id="graphDetailUpdated"></dd></div>
+                <div><dt data-i18n="connections">连接数</dt><dd id="graphDetailDegree"></dd></div>
+                <div><dt data-i18n="updated">更新时间</dt><dd id="graphDetailUpdated"></dd></div>
               </dl>
               <div id="graphDetailTags" class="graph-tag-stack"></div>
               <div class="graph-control-block"></div>
-              <div class="graph-panel-label">Linked Nodes</div>
+              <div class="graph-panel-label" data-i18n="linkedNodes">关联节点</div>
               <div id="graphDetailLinks" class="graph-link-stack"></div>
               <div class="graph-control-block"></div>
-              <button type="button" id="openGraphNodeBtn" class="primary">Open in Editor</button>
+              <button type="button" id="openGraphNodeBtn" class="primary" data-i18n="openInEditor">在编辑器中打开</button>
             </div>
           </aside>
         </div>
@@ -1387,10 +1819,323 @@ INDEX_HTML = r"""<!doctype html>
     </main>
   </div>
   <script>
+    const languageStoreKey = "nanobot_llm_wiki_language_v1";
+    const translations = {
+      zh: {
+        brandSubtitle: "本地记忆工作区",
+        home: "首页",
+        dashboard: "概览",
+        newPage: "新建页面",
+        new: "新建",
+        graph: "图谱",
+        graphView: "图谱视图",
+        searchPlaceholder: "搜索标题、标签和别名",
+        search: "搜索",
+        pages: "页面",
+        links: "关系",
+        types: "类型",
+        cursor: "游标",
+        knowledgeConsole: "知识控制台",
+        memoryDashboard: "记忆概览",
+        localDurableMemory: "本地持久记忆",
+        editor: "编辑器",
+        memoryEditor: "记忆编辑器",
+        memoryHealth: "记忆健康",
+        workspace: "工作区",
+        checking: "检查中",
+        refresh: "刷新",
+        newMemory: "新建记忆",
+        rebuildIndex: "重建索引",
+        recentPages: "最近页面",
+        openLatest: "打开最新",
+        knowledgeBase: "知识库",
+        ready: "就绪",
+        path: "路径",
+        indexTitle: "索引标题",
+        tags: "标签",
+        maxBytes: "最大字节数",
+        import: "导入",
+        pageDetails: "页面信息",
+        title: "标题",
+        type: "类型",
+        confidence: "置信度",
+        aliases: "别名",
+        relationship: "页面关系",
+        linkTo: "链接至",
+        pageTitleOrId: "页面标题或 ID",
+        relation: "关系类型",
+        save: "保存",
+        link: "创建关系",
+        archive: "归档",
+        pageSignals: "页面信号",
+        updated: "更新时间",
+        sources: "来源",
+        knowledgeGraph: "知识图谱",
+        localMemory: "本地记忆",
+        fit: "适应画布",
+        resetLayout: "重置布局",
+        graphZoomControls: "图谱缩放控制",
+        zoomOut: "缩小",
+        zoomIn: "放大",
+        resetZoom: "重置缩放",
+        explore: "探索",
+        searchGraph: "搜索图谱",
+        focus: "聚焦",
+        filterByPageType: "按页面类型筛选",
+        allTypes: "全部类型",
+        clear: "清除",
+        legend: "图例",
+        graphHelp: "滚轮缩放，拖动空白区域平移，拖动节点调整布局。",
+        wikiPageGraph: "Wiki 页面图谱",
+        graphMinimap: "图谱小地图",
+        inspector: "检查器",
+        connections: "连接数",
+        linkedNodes: "关联节点",
+        openInEditor: "在编辑器中打开",
+        switchToEnglish: "切换到英文",
+        switchToChinese: "切换到中文",
+        requestFailed: "请求失败",
+        newPageLabel: "新页面",
+        memoryGraph: "记忆图谱",
+        relationshipMap: "关系地图",
+        noContent: "暂无内容。",
+        untagged: "未加标签",
+        matchedField: "匹配{field}",
+        matchedContent: "匹配正文",
+        matchedSearch: "匹配搜索条件",
+        fieldTitle: "标题",
+        fieldId: "ID",
+        fieldType: "类型",
+        fieldTag: "标签",
+        fieldAlias: "别名",
+        notSaved: "未保存",
+        cursorOne: "{count} 个游标",
+        cursorMany: "{count} 个游标",
+        healthy: "健康",
+        attention: "需要关注",
+        unhealthy: "需要处理",
+        unknown: "未知",
+        workspaceReady: "工作区已就绪",
+        checksPassed: "{count} 项健康检查已通过。",
+        repairIndex: "修复索引",
+        repairSetup: "修复安装",
+        importedPageOne: "{count} 个导入页面",
+        importedPageMany: "{count} 个导入页面",
+        pageCountOne: "{count} 个页面",
+        pageCountMany: "{count} 个页面",
+        noPagesYet: "还没有页面",
+        resultOne: "找到 {count} 条结果。",
+        resultMany: "找到 {count} 条结果。",
+        nodes: "节点",
+        avgDegree: "平均连接",
+        visibleCount: "{count} 个可见",
+        allNodes: "全部节点",
+        linkCountOne: "{count} 条关系",
+        linkCountMany: "{count} 条关系",
+        noLinkedNodes: "没有关联节点",
+        noNodeSelected: "未选择节点",
+        graphStats: "{pages} 个页面 / {links} 条关系",
+        noWikiPages: "还没有 Wiki 页面。",
+        running: "处理中...",
+        indexResult: "已索引 {indexed}；移除 {removed}；跳过 {skipped}。",
+        repairing: "修复中",
+        workspaceRepaired: "工作区设置已修复。",
+        importResult: "已导入 {imported}；跳过 {skipped}。",
+        archiveConfirm: "确定要归档这个页面吗？",
+        archived: "已归档。",
+        chooseLink: "请先选择当前页面和目标页面。",
+        linked: "关系已创建。",
+        saved: "已保存。"
+      },
+      en: {
+        brandSubtitle: "Local memory workspace",
+        home: "Home",
+        dashboard: "Dashboard",
+        newPage: "New page",
+        new: "New",
+        graph: "Graph",
+        graphView: "Graph view",
+        searchPlaceholder: "Search titles, tags, aliases",
+        search: "Search",
+        pages: "Pages",
+        links: "Links",
+        types: "Types",
+        cursor: "Cursor",
+        knowledgeConsole: "Knowledge Console",
+        memoryDashboard: "Memory Dashboard",
+        localDurableMemory: "Local durable memory",
+        editor: "Editor",
+        memoryEditor: "Memory Editor",
+        memoryHealth: "Memory Health",
+        workspace: "Workspace",
+        checking: "Checking",
+        refresh: "Refresh",
+        newMemory: "New Memory",
+        rebuildIndex: "Rebuild Index",
+        recentPages: "Recent Pages",
+        openLatest: "Open Latest",
+        knowledgeBase: "Knowledge Base",
+        ready: "Ready",
+        path: "Path",
+        indexTitle: "Index Title",
+        tags: "Tags",
+        maxBytes: "Max bytes",
+        import: "Import",
+        pageDetails: "Page Details",
+        title: "Title",
+        type: "Type",
+        confidence: "Confidence",
+        aliases: "Aliases",
+        relationship: "Relationship",
+        linkTo: "Link To",
+        pageTitleOrId: "Page title or id",
+        relation: "Relation",
+        save: "Save",
+        link: "Link",
+        archive: "Archive",
+        pageSignals: "Page Signals",
+        updated: "Updated",
+        sources: "Sources",
+        knowledgeGraph: "Knowledge Graph",
+        localMemory: "Local Memory",
+        fit: "Fit",
+        resetLayout: "Reset Layout",
+        graphZoomControls: "Graph zoom controls",
+        zoomOut: "Zoom out",
+        zoomIn: "Zoom in",
+        resetZoom: "Reset zoom",
+        explore: "Explore",
+        searchGraph: "Search graph",
+        focus: "Focus",
+        filterByPageType: "Filter by page type",
+        allTypes: "All types",
+        clear: "Clear",
+        legend: "Legend",
+        graphHelp: "Wheel to zoom. Drag empty canvas to pan. Drag nodes to arrange the graph.",
+        wikiPageGraph: "Wiki page graph",
+        graphMinimap: "Graph minimap",
+        inspector: "Inspector",
+        connections: "Connections",
+        linkedNodes: "Linked Nodes",
+        openInEditor: "Open in Editor",
+        switchToEnglish: "Switch to English",
+        switchToChinese: "Switch to Chinese",
+        requestFailed: "Request failed",
+        newPageLabel: "New page",
+        memoryGraph: "Memory Graph",
+        relationshipMap: "Relationship map",
+        noContent: "No content yet.",
+        untagged: "untagged",
+        matchedField: "Matched {field}",
+        matchedContent: "Matched content",
+        matchedSearch: "Matched search",
+        fieldTitle: "title",
+        fieldId: "id",
+        fieldType: "type",
+        fieldTag: "tag",
+        fieldAlias: "alias",
+        notSaved: "Not saved",
+        cursorOne: "{count} cursor",
+        cursorMany: "{count} cursors",
+        healthy: "Healthy",
+        attention: "Needs attention",
+        unhealthy: "Action required",
+        unknown: "Unknown",
+        workspaceReady: "Workspace ready",
+        checksPassed: "{count} health checks passed.",
+        repairIndex: "Repair Index",
+        repairSetup: "Repair Setup",
+        importedPageOne: "{count} imported page",
+        importedPageMany: "{count} imported pages",
+        pageCountOne: "{count} page",
+        pageCountMany: "{count} pages",
+        noPagesYet: "No pages yet",
+        resultOne: "{count} result.",
+        resultMany: "{count} results.",
+        nodes: "Nodes",
+        avgDegree: "Avg degree",
+        visibleCount: "{count} visible",
+        allNodes: "All nodes",
+        linkCountOne: "{count} link",
+        linkCountMany: "{count} links",
+        noLinkedNodes: "No linked nodes",
+        noNodeSelected: "No node selected",
+        graphStats: "{pages} pages / {links} links",
+        noWikiPages: "No Wiki pages yet.",
+        running: "Running...",
+        indexResult: "Indexed {indexed}; removed {removed}; skipped {skipped}.",
+        repairing: "Repairing",
+        workspaceRepaired: "Workspace setup repaired.",
+        importResult: "Imported {imported}; skipped {skipped}.",
+        archiveConfirm: "Archive this page?",
+        archived: "Archived.",
+        chooseLink: "Choose the current page and a target page first.",
+        linked: "Linked.",
+        saved: "Saved."
+      }
+    };
+    const pageTypeLabels = {
+      zh: {
+        note: "笔记",
+        profile: "用户资料",
+        "project-index": "项目索引",
+        project: "项目",
+        questions: "待确认问题",
+        qa: "质量验证",
+        architecture: "架构",
+        inbox: "收件箱",
+        history: "历史",
+        "knowledge-base-index": "知识库索引",
+        "knowledge-doc": "知识文档",
+        deployment: "部署",
+        checklist: "清单"
+      },
+      en: {}
+    };
+    const healthCheckLabels = {
+      workspace: "工作区",
+      wiki_dir: "Wiki 目录",
+      pages_dir: "Markdown 页面",
+      database: "SQLite 数据库",
+      index_sync: "搜索索引",
+      memory_bridge: "记忆桥",
+      skill: "NanoBot 技能",
+      config: "工作区配置",
+      tool_registration: "NanoBot 工具"
+    };
+    const healthCheckMessages = {
+      "workspace.ok": "工作区目录可用。",
+      "workspace.error": "工作区目录缺失或不可访问。",
+      "wiki_dir.ok": "Wiki 存储目录可用。",
+      "wiki_dir.error": "Wiki 存储目录缺失。",
+      "pages_dir.ok": "Markdown 页面目录可用。",
+      "pages_dir.error": "Markdown 页面目录缺失。",
+      "database.ok": "数据库完整性和结构检查通过。",
+      "database.error": "SQLite 数据库缺失、损坏或结构不完整。",
+      "index_sync.ok": "Markdown 页面与搜索索引保持一致。",
+      "index_sync.warning": "Markdown 页面与搜索索引不一致，请重建索引。",
+      "memory_bridge.ok": "NanoBot 记忆桥已就绪。",
+      "memory_bridge.error": "MEMORY.md 中缺少 Wiki 记忆桥。",
+      "skill.ok": "Wiki 技能已包含核心记忆工作流。",
+      "skill.warning": "Wiki 技能缺少必要的工具说明。",
+      "skill.error": "Wiki 技能缺失或不可读取。",
+      "config.ok": "工作区配置文件已就绪。",
+      "config.warning": "工作区配置文件缺失。",
+      "tool_registration.ok": "全部 Wiki 工具均已注册。",
+      "tool_registration.error": "部分 Wiki 工具尚未注册。"
+    };
     const graphPositionStoreKey = "nanobot_llm_wiki_graph_positions_v2";
-    const graphNodeSize = { width: 176, height: 78 };
+    const graphNodeSize = { width: 124, height: 72 };
+    const graphDotRadius = 8;
     const state = {
-      pages: [],
+      allPages: [],
+      visiblePages: [],
+      status: {},
+      health: null,
+      language: loadLanguage(),
+      activePage: null,
+      listQuery: "",
+      view: "dashboard",
       activeId: "",
       graph: { nodes: [], links: [] },
       graphSelectedId: "",
@@ -1406,6 +2151,78 @@ INDEX_HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     const message = (text) => { $("message").textContent = text || ""; };
     const graphMessage = (text) => { $("graphMessage").textContent = text || ""; };
+    function loadLanguage() {
+      try {
+        return localStorage.getItem(languageStoreKey) === "en" ? "en" : "zh";
+      } catch (_error) {
+        return "zh";
+      }
+    }
+    function t(key, values = {}) {
+      const dictionary = translations[state.language] || translations.zh;
+      let text = dictionary[key] ?? translations.en[key] ?? key;
+      Object.entries(values).forEach(([name, value]) => {
+        text = text.split(`{${name}}`).join(String(value));
+      });
+      return text;
+    }
+    function countText(oneKey, manyKey, count) {
+      return t(count === 1 ? oneKey : manyKey, { count });
+    }
+    function graphStatsText(pageCount, linkCount) {
+      return t("graphStats", { pages: pageCount, links: linkCount });
+    }
+    function localizedHealthCheck(check) {
+      if (state.language === "en" || !check.id) return check;
+      return {
+        ...check,
+        label: healthCheckLabels[check.id] || check.label,
+        message: healthCheckMessages[`${check.id}.${check.status}`] || check.message
+      };
+    }
+    function applyStaticTranslations() {
+      document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
+      document.querySelectorAll("[data-i18n]").forEach((element) => {
+        element.textContent = t(element.dataset.i18n);
+      });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+        element.setAttribute("placeholder", t(element.dataset.i18nPlaceholder));
+      });
+      document.querySelectorAll("[data-i18n-title]").forEach((element) => {
+        element.setAttribute("title", t(element.dataset.i18nTitle));
+      });
+      document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
+        element.setAttribute("aria-label", t(element.dataset.i18nAriaLabel));
+      });
+      const languageButton = $("languageBtn");
+      const nextIsEnglish = state.language === "zh";
+      languageButton.textContent = nextIsEnglish ? "EN" : "中文";
+      languageButton.title = nextIsEnglish ? t("switchToEnglish") : t("switchToChinese");
+      languageButton.setAttribute("aria-label", languageButton.title);
+    }
+    function updateViewHeader() {
+      if (state.view === "dashboard") {
+        $("viewTitle").textContent = t("memoryDashboard");
+        $("viewSubtitle").textContent = t("localDurableMemory");
+      } else if (state.view === "editor") {
+        $("viewTitle").textContent = $("title").value || t("memoryEditor");
+        $("viewSubtitle").textContent = $("pageId").value || t("newPageLabel");
+      } else {
+        $("viewTitle").textContent = t("memoryGraph");
+        $("viewSubtitle").textContent = t("relationshipMap");
+      }
+    }
+    function setLanguage(language) {
+      state.language = language === "en" ? "en" : "zh";
+      try { localStorage.setItem(languageStoreKey, state.language); } catch (_error) {}
+      applyStaticTranslations();
+      updateViewHeader();
+      renderList(state.visiblePages, { query: state.listQuery });
+      renderStatus();
+      renderDashboard();
+      if (state.activePage) updateInspector(state.activePage);
+      if ((state.graph.nodes || []).length) renderGraph();
+    }
     const pagePayload = () => ({
       id: $("pageId").value,
       title: $("title").value,
@@ -1422,45 +2239,60 @@ INDEX_HTML = r"""<!doctype html>
         ...options
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed");
+      if (!res.ok) throw new Error(data.error || t("requestFailed"));
       return data;
     }
     function setView(mode) {
+      state.view = mode;
+      $("dashboardTab").classList.toggle("active", mode === "dashboard");
       $("editorTab").classList.toggle("active", mode === "editor");
       $("graphTab").classList.toggle("active", mode === "graph");
     }
+    function showDashboard() {
+      $("dashboardPanel").classList.remove("hidden");
+      $("editor").classList.add("hidden");
+      $("graphPanel").classList.add("hidden");
+      setView("dashboard");
+      updateViewHeader();
+      renderDashboard();
+    }
     function showEditor() {
+      $("dashboardPanel").classList.add("hidden");
       $("editor").classList.remove("hidden");
       $("graphPanel").classList.add("hidden");
       setView("editor");
-      const title = $("title").value || "Memory Editor";
-      $("viewTitle").textContent = title;
-      $("viewSubtitle").textContent = $("pageId").value || "New page";
+      updateViewHeader();
     }
     function showGraph() {
+      $("dashboardPanel").classList.add("hidden");
       $("editor").classList.add("hidden");
       $("graphPanel").classList.remove("hidden");
       setView("graph");
-      $("viewTitle").textContent = "Memory Graph";
-      $("viewSubtitle").textContent = "Relationship map";
+      updateViewHeader();
       if (!state.graphSelectedId && state.activeId) state.graphSelectedId = state.activeId;
       loadGraph().catch((error) => graphMessage(error.message));
     }
-    function renderList(pages) {
-      state.pages = pages;
+    function renderList(pages, options = {}) {
+      state.visiblePages = pages;
       $("pageList").innerHTML = "";
       $("listCount").textContent = String(pages.length);
+      const query = options.query !== undefined ? options.query : state.listQuery;
+      state.listQuery = query;
       pages.forEach((page) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "item" + (page.id === state.activeId ? " active" : "");
         btn.style.setProperty("--item-color", nodeColor(page));
-        btn.innerHTML = `<div class="item-title"></div><div class="item-meta"></div><div class="item-preview"></div><div class="item-tags"></div>`;
+        btn.innerHTML = `<div class="item-title"></div><div class="item-meta"></div><div class="item-preview"></div><div class="item-match"></div><div class="item-tags"></div>`;
         btn.querySelector(".item-title").textContent = page.title;
-        btn.querySelector(".item-meta").textContent = `${page.page_type} / ${page.id}`;
-        btn.querySelector(".item-preview").textContent = compactText(page.content || "", 118) || "No content yet.";
+        btn.querySelector(".item-meta").textContent = `${formatGraphType(page.page_type)} / ${page.id}`;
+        btn.querySelector(".item-preview").textContent = compactText(page.content || "", 118) || t("noContent");
+        const match = matchSummary(page, query);
+        const matchEl = btn.querySelector(".item-match");
+        matchEl.textContent = match;
+        matchEl.classList.toggle("hidden", !match);
         const tags = btn.querySelector(".item-tags");
-        (page.tags && page.tags.length ? page.tags : ["untagged"]).slice(0, 4).forEach((tag) => {
+        (page.tags && page.tags.length ? page.tags : [t("untagged")]).slice(0, 4).forEach((tag) => {
           const chip = document.createElement("span");
           chip.className = "tag";
           chip.textContent = tag;
@@ -1470,25 +2302,53 @@ INDEX_HTML = r"""<!doctype html>
         $("pageList").appendChild(btn);
       });
     }
+    function matchSummary(page, query) {
+      const q = String(query || "").trim().toLowerCase();
+      if (!q) return "";
+      const fields = [
+        ["fieldTitle", page.title || ""],
+        ["fieldId", page.id || ""],
+        ["fieldType", page.page_type || ""],
+        ["fieldTag", (page.tags || []).join(" ")],
+        ["fieldAlias", (page.aliases || []).join(" ")],
+      ];
+      for (const [label, value] of fields) {
+        if (String(value).toLowerCase().includes(q)) return t("matchedField", { field: t(label) });
+      }
+      const content = String(page.content || "").replace(/\s+/g, " ").trim();
+      const index = content.toLowerCase().indexOf(q);
+      if (index >= 0) {
+        const start = Math.max(0, index - 34);
+        const end = Math.min(content.length, index + q.length + 64);
+        const prefix = start > 0 ? "..." : "";
+        const suffix = end < content.length ? "..." : "";
+        return `${t("matchedContent")} · ${prefix}${content.slice(start, end)}${suffix}`;
+      }
+      const terms = q.split(/\s+/).filter(Boolean);
+      const term = terms.find((item) => content.toLowerCase().includes(item));
+      if (term) return `${t("matchedContent")} · ${compactText(content, 92)}`;
+      return t("matchedSearch");
+    }
     function compactText(value, limit) {
       const text = String(value || "").replace(/\s+/g, " ").trim();
       return text.length > limit ? text.slice(0, limit - 1).trim() + "..." : text;
     }
     function formatDate(value) {
-      if (!value) return "Not saved";
+      if (!value) return t("notSaved");
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
-      return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      const locale = state.language === "zh" ? "zh-CN" : "en-US";
+      return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
     }
     function updateInspector(page) {
       const confidence = Number.isFinite(Number(page.confidence)) ? Number(page.confidence) : 0.7;
       const cursors = page.source_cursors || [];
-      $("detailId").textContent = page.id || "New page";
+      $("detailId").textContent = page.id || t("newPageLabel");
       $("detailUpdated").textContent = formatDate(page.updated_at);
       $("detailConfidence").textContent = confidence.toFixed(2);
-      $("detailSources").textContent = `${cursors.length} cursor${cursors.length === 1 ? "" : "s"}`;
+      $("detailSources").textContent = countText("cursorOne", "cursorMany", cursors.length);
       $("detailTags").innerHTML = "";
-      (page.tags && page.tags.length ? page.tags : ["untagged"]).forEach((tag) => {
+      (page.tags && page.tags.length ? page.tags : [t("untagged")]).forEach((tag) => {
         const chip = document.createElement("span");
         chip.className = "tag";
         chip.textContent = tag;
@@ -1496,6 +2356,7 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
     function fillEditor(page) {
+      state.activePage = page;
       state.activeId = page.id || "";
       $("pageId").value = page.id || "";
       $("title").value = page.title || "";
@@ -1507,13 +2368,136 @@ INDEX_HTML = r"""<!doctype html>
       $("linkTarget").value = "";
       $("linkRelation").value = "related";
       updateInspector(page);
-      renderList(state.pages);
+      renderList(state.visiblePages.length ? state.visiblePages : state.allPages);
       showEditor();
     }
-    async function loadStatus() {
-      const status = await api("/api/status");
+    function pageTypeCounts(pages) {
+      const counts = new Map();
+      pages.forEach((page) => {
+        const type = String(page.page_type || "note");
+        counts.set(type, (counts.get(type) || 0) + 1);
+      });
+      return counts;
+    }
+    function renderHealth() {
+      const result = state.health;
+      const badge = $("healthBadge");
+      const summary = $("healthSummary");
+      summary.innerHTML = "";
+      if (!result) {
+        badge.textContent = t("checking");
+        badge.dataset.health = "";
+        return;
+      }
+      const badgeLabels = {
+        healthy: t("healthy"),
+        attention: t("attention"),
+        unhealthy: t("unhealthy")
+      };
+      badge.textContent = badgeLabels[result.health] || t("unknown");
+      badge.dataset.health = result.health || "";
+      const issues = (result.checks || []).filter((check) => check.status !== "ok");
+      const visibleChecks = issues.length ? issues : [{
+        status: "ok",
+        label: t("workspaceReady"),
+        message: t("checksPassed", { count: result.summary.passed })
+      }];
+      visibleChecks.map(localizedHealthCheck).forEach((check) => {
+        const row = document.createElement("div");
+        row.className = "health-check";
+        row.dataset.status = check.status;
+        const indicator = document.createElement("span");
+        indicator.className = "health-indicator";
+        const copy = document.createElement("div");
+        copy.className = "health-copy";
+        const label = document.createElement("div");
+        label.className = "health-label";
+        label.textContent = check.label;
+        const detail = document.createElement("div");
+        detail.className = "health-message";
+        detail.textContent = check.message;
+        copy.appendChild(label);
+        copy.appendChild(detail);
+        row.appendChild(indicator);
+        row.appendChild(copy);
+        if (check.action === "reindex") {
+          const repair = document.createElement("button");
+          repair.type = "button";
+          repair.textContent = t("repairIndex");
+          repair.addEventListener("click", () => reindexWorkspace().catch((error) => {
+            $("reindexResult").textContent = error.message;
+          }));
+          row.appendChild(repair);
+        } else if (check.action === "install") {
+          const repair = document.createElement("button");
+          repair.type = "button";
+          repair.textContent = t("repairSetup");
+          repair.addEventListener("click", () => repairWorkspace().catch((error) => {
+            message(error.message);
+          }));
+          row.appendChild(repair);
+        }
+        summary.appendChild(row);
+      });
+    }
+    function renderDashboard() {
+      const status = state.status || {};
+      const pages = state.allPages || [];
+      const typeCounts = pageTypeCounts(pages);
+      $("workspacePath").textContent = status.workspace || t("workspace");
+      $("metricGrid").innerHTML = "";
+      [
+        [t("pages"), status.pages ?? pages.length],
+        [t("links"), status.links ?? 0],
+        [t("types"), typeCounts.size],
+        [t("cursor"), status.cursor ?? 0],
+      ].forEach(([label, value]) => {
+        const item = document.createElement("div");
+        item.className = "metric";
+        const number = document.createElement("strong");
+        const caption = document.createElement("span");
+        number.textContent = value;
+        caption.textContent = label;
+        item.appendChild(number);
+        item.appendChild(caption);
+        $("metricGrid").appendChild(item);
+      });
+      renderHealth();
+
+      const kbCount = pages.filter((page) => {
+        const text = `${page.page_type || ""} ${(page.tags || []).join(" ")}`.toLowerCase();
+        return text.includes("knowledge-base") || text.includes("knowledge-doc") || text.includes("imported");
+      }).length;
+      $("toolStatus").textContent = countText("importedPageOne", "importedPageMany", kbCount);
+      $("recentPagesMeta").textContent = countText("pageCountOne", "pageCountMany", pages.length);
+      $("openFirstRecentBtn").disabled = !pages.length;
+      $("recentPages").innerHTML = "";
+      if (!pages.length) {
+        const empty = document.createElement("div");
+        empty.className = "dashboard-row";
+        empty.innerHTML = `<div class="dashboard-row-title"></div><div class="dashboard-row-meta"></div>`;
+        empty.querySelector(".dashboard-row-title").textContent = t("noPagesYet");
+        empty.querySelector(".dashboard-row-meta").textContent = t("ready");
+        $("recentPages").appendChild(empty);
+        return;
+      }
+      pages.slice(0, 8).forEach((page) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "dashboard-row";
+        row.style.setProperty("--row-color", nodeColor(page));
+        row.innerHTML = `<div class="dashboard-row-title"></div><div class="dashboard-row-meta"></div><div class="dashboard-row-preview"></div>`;
+        row.querySelector(".dashboard-row-title").textContent = page.title || page.id;
+        row.querySelector(".dashboard-row-meta").textContent = `${formatGraphType(page.page_type)} / ${formatDate(page.updated_at)}`;
+        row.querySelector(".dashboard-row-preview").textContent = compactText(page.content || "", 140) || t("noContent");
+        row.addEventListener("click", () => loadPage(page.id));
+        $("recentPages").appendChild(row);
+      });
+    }
+    function renderStatus() {
+      const status = state.status || {};
       $("status").innerHTML = "";
-      [["Pages", status.pages], ["Links", status.links], ["Cursor", status.cursor]].forEach(([label, value]) => {
+      [[t("pages"), status.pages || 0], [t("links"), status.links || 0], [t("cursor"), status.cursor || 0]].forEach(([label, value]) => {
         const item = document.createElement("span");
         const number = document.createElement("strong");
         const caption = document.createElement("em");
@@ -1524,18 +2508,27 @@ INDEX_HTML = r"""<!doctype html>
         $("status").appendChild(item);
       });
     }
+    async function loadStatus() {
+      const [status, health] = await Promise.all([api("/api/status"), api("/api/doctor")]);
+      state.status = status;
+      state.health = health;
+      renderStatus();
+      renderDashboard();
+    }
     async function loadPages() {
       const data = await api("/api/pages?limit=200");
-      renderList(data.pages);
-      if (!state.activeId && data.pages[0]) fillEditor(data.pages[0]);
+      state.allPages = data.pages;
+      renderList(data.pages, { query: "" });
       await loadStatus();
+      if (state.view === "dashboard") renderDashboard();
     }
     async function searchPages() {
-      const q = encodeURIComponent($("searchInput").value.trim());
+      const rawQuery = $("searchInput").value.trim();
+      const q = encodeURIComponent(rawQuery);
       const data = q ? await api(`/api/search?q=${q}&limit=50`) : await api("/api/pages?limit=200");
       const pages = data.results ? data.results.map((result) => result.page) : data.pages;
-      renderList(pages);
-      message(q ? `${pages.length} result${pages.length === 1 ? "" : "s"}.` : "");
+      renderList(pages, { query: rawQuery });
+      message(q ? countText("resultOne", "resultMany", pages.length) : "");
     }
     async function loadPage(id) {
       const data = await api(`/api/pages/${encodeURIComponent(id)}`);
@@ -1552,21 +2545,18 @@ INDEX_HTML = r"""<!doctype html>
       return text.length > max ? text.slice(0, max - 1) + "…" : text;
     }
     function relationLabelWidth(text) {
-      return Math.max(54, Math.min(132, text.length * 7 + 22));
-    }
-    function tagChipWidth(text) {
-      return Math.max(36, Math.min(74, text.length * 6 + 16));
-    }
-    function nodeMetaText(node) {
-      return trimLabel(`${node.page_type || "note"} / ${node.id}`, 31);
+      return Math.max(46, Math.min(118, text.length * 6.2 + 18));
     }
     function nodeColor(node) {
       const value = `${node.page_type || ""} ${(node.tags || []).join(" ")}`.toLowerCase();
-      if (value.includes("profile") || value.includes("user")) return "#0f766e";
-      if (value.includes("project")) return "#ad741d";
-      if (value.includes("question")) return "#b4235a";
-      if (value.includes("inbox") || value.includes("history")) return "#65716b";
-      return "#4f46e5";
+      if (value.includes("profile") || value.includes("user")) return "#21877d";
+      if (value.includes("project-index")) return "#d0a03c";
+      if (value.includes("project")) return "#c4882d";
+      if (value.includes("question")) return "#c94f78";
+      if (value.includes("qa") || value.includes("test")) return "#4f79c8";
+      if (value.includes("architecture")) return "#6961d2";
+      if (value.includes("inbox") || value.includes("history")) return "#74817b";
+      return "#8a6db2";
     }
     function graphNodeById(id) {
       return (state.graph.nodes || []).find((node) => node.id === id);
@@ -1575,7 +2565,10 @@ INDEX_HTML = r"""<!doctype html>
       return String(node.page_type || "note").toLowerCase();
     }
     function formatGraphType(value) {
-      const text = String(value || "note").replace(/[-_]/g, " ");
+      const key = String(value || "note").toLowerCase();
+      const localized = pageTypeLabels[state.language] && pageTypeLabels[state.language][key];
+      if (localized) return localized;
+      const text = key.replace(/[-_]/g, " ");
       return text.charAt(0).toUpperCase() + text.slice(1);
     }
     function graphSearchText(node) {
@@ -1593,6 +2586,11 @@ INDEX_HTML = r"""<!doctype html>
         if (link.to_id === id) return { index, link, otherId: link.from_id, direction: "in" };
         return null;
       }).filter(Boolean);
+    }
+    function graphNodeRadius(nodeOrId) {
+      const id = typeof nodeOrId === "string" ? nodeOrId : nodeOrId && nodeOrId.id;
+      const degree = id ? graphConnections(id).length : 0;
+      return graphDotRadius + Math.min(4, degree * 1.25);
     }
     function graphNeighborhood(id) {
       const nodes = new Set([id]);
@@ -1618,7 +2616,7 @@ INDEX_HTML = r"""<!doctype html>
       typeFilter.innerHTML = "";
       const allOption = document.createElement("option");
       allOption.value = "all";
-      allOption.textContent = "All types";
+      allOption.textContent = t("allTypes");
       typeFilter.appendChild(allOption);
       Array.from(typeCounts.keys()).sort().forEach((type) => {
         const option = document.createElement("option");
@@ -1631,7 +2629,7 @@ INDEX_HTML = r"""<!doctype html>
       const summary = $("graphSummary");
       summary.innerHTML = "";
       const averageDegree = nodes.length ? ((links.length * 2) / nodes.length).toFixed(1) : "0.0";
-      [["Nodes", nodes.length], ["Links", links.length], ["Types", typeCounts.size], ["Avg degree", averageDegree]].forEach(([label, value]) => {
+      [[t("nodes"), nodes.length], [t("links"), links.length], [t("types"), typeCounts.size], [t("avgDegree"), averageDegree]].forEach(([label, value]) => {
         const item = document.createElement("div");
         const number = document.createElement("strong");
         const caption = document.createElement("span");
@@ -1670,8 +2668,8 @@ INDEX_HTML = r"""<!doctype html>
       const nodes = state.graph.nodes || [];
       const matchingCount = nodes.filter((node) => matchesGraphFilter(node)).length;
       const selected = graphNodeById(state.graphSelectedId);
-      $("graphDensityLabel").textContent = `${matchingCount} visible`;
-      $("graphFocusLabel").textContent = selected ? trimLabel(selected.title, 42) : "All nodes";
+      $("graphDensityLabel").textContent = t("visibleCount", { count: matchingCount });
+      $("graphFocusLabel").textContent = selected ? trimLabel(selected.title, 42) : t("allNodes");
     }
     function renderGraphInspector() {
       const node = graphNodeById(state.graphSelectedId);
@@ -1687,15 +2685,16 @@ INDEX_HTML = r"""<!doctype html>
       empty.classList.add("hidden");
       content.classList.remove("hidden");
       $("graphDetailTitle").textContent = node.title || node.id;
+      $("graphDetailTitle").style.setProperty("--node-color", nodeColor(node));
       $("graphDetailMeta").textContent = `${formatGraphType(node.page_type)} / ${node.id}`;
       $("graphDetailId").textContent = node.id;
       $("graphDetailUpdated").textContent = formatDate(node.updated_at);
 
       const connections = graphConnections(node.id);
-      $("graphDetailDegree").textContent = `${connections.length} link${connections.length === 1 ? "" : "s"}`;
+      $("graphDetailDegree").textContent = countText("linkCountOne", "linkCountMany", connections.length);
       const tags = $("graphDetailTags");
       tags.innerHTML = "";
-      (node.tags && node.tags.length ? node.tags : ["untagged"]).slice(0, 8).forEach((tag) => {
+      (node.tags && node.tags.length ? node.tags : [t("untagged")]).slice(0, 8).forEach((tag) => {
         const chip = document.createElement("span");
         chip.className = "tag";
         chip.textContent = tag;
@@ -1707,7 +2706,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!connections.length) {
         const emptyLink = document.createElement("div");
         emptyLink.className = "graph-empty-state";
-        emptyLink.textContent = "No linked nodes";
+        emptyLink.textContent = t("noLinkedNodes");
         list.appendChild(emptyLink);
       } else {
         connections.slice(0, 12).forEach((connection) => {
@@ -1950,6 +2949,10 @@ INDEX_HTML = r"""<!doctype html>
           `translate(${state.graphView.panX} ${state.graphView.panY}) scale(${state.graphView.zoom})`,
         );
         viewport.classList.toggle("lod-minimal", state.graphView.zoom < 0.72);
+        viewport.classList.toggle(
+          "lod-compact",
+          state.graphView.zoom < 0.92 || state.graphSize.width < 520,
+        );
         viewport.classList.toggle("lod-detail", state.graphView.zoom > 1.24);
       }
       $("zoomValue").textContent = `${Math.round(state.graphView.zoom * 100)}%`;
@@ -1993,20 +2996,18 @@ INDEX_HTML = r"""<!doctype html>
         y: centerY + Math.sin(angle) * radiusY
       };
     }
-    function edgePoint(source, target) {
+    function edgePoint(source, target, radius) {
       const dx = target.x - source.x;
       const dy = target.y - source.y;
-      const halfW = graphNodeSize.width / 2 + 5;
-      const halfH = graphNodeSize.height / 2 + 5;
-      const scale = Math.max(Math.abs(dx) / halfW, Math.abs(dy) / halfH, 1);
+      const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
       return {
-        x: source.x + dx / scale,
-        y: source.y + dy / scale
+        x: source.x + (dx / distance) * radius,
+        y: source.y + (dy / distance) * radius
       };
     }
-    function routeLink(from, to) {
-      const start = edgePoint(from, to);
-      const end = edgePoint(to, from);
+    function routeLink(from, to, fromId, toId) {
+      const start = edgePoint(from, to, graphNodeRadius(fromId) + 5);
+      const end = edgePoint(to, from, graphNodeRadius(toId) + 5);
       const dx = end.x - start.x;
       const dy = end.y - start.y;
       const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
@@ -2022,7 +3023,7 @@ INDEX_HTML = r"""<!doctype html>
         const from = state.nodePositions[link.from_id];
         const to = state.nodePositions[link.to_id];
         if (!from || !to) return;
-        const route = routeLink(from, to);
+        const route = routeLink(from, to, link.from_id, link.to_id);
         const path = document.querySelector(`[data-link-path="${index}"]`);
         const glow = document.querySelector(`[data-link-glow="${index}"]`);
         const label = document.querySelector(`[data-link-label="${index}"]`);
@@ -2030,7 +3031,7 @@ INDEX_HTML = r"""<!doctype html>
         if (glow) glow.setAttribute("d", d);
         if (path) path.setAttribute("d", d);
         if (label) {
-          label.setAttribute("transform", `translate(${route.midX} ${route.midY - 8})`);
+          label.setAttribute("transform", `translate(${route.midX} ${route.midY - 6})`);
         }
       });
       (state.graph.nodes || []).forEach((node) => {
@@ -2050,7 +3051,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderGraph() {
       const svg = $("graphSvg");
       svg.innerHTML = "";
-      const width = Math.max(svg.clientWidth || 940, 680);
+      const width = Math.max(svg.clientWidth || 940, 480);
       const height = Math.max(svg.clientHeight || 620, 480);
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       state.graphSize = { width, height };
@@ -2061,11 +3062,11 @@ INDEX_HTML = r"""<!doctype html>
         viewBox: "0 0 10 10",
         refX: "9",
         refY: "5",
-        markerWidth: "6",
-        markerHeight: "6",
+        markerWidth: "5",
+        markerHeight: "5",
         orient: "auto-start-reverse"
       });
-      marker.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#9fc7b9" }));
+      marker.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#8da69d" }));
       defs.appendChild(marker);
       svg.appendChild(defs);
 
@@ -2081,11 +3082,11 @@ INDEX_HTML = r"""<!doctype html>
 
       const nodes = state.graph.nodes || [];
       const links = state.graph.links || [];
-      $("graphStats").textContent = `${nodes.length} pages / ${links.length} links`;
+      $("graphStats").textContent = graphStatsText(nodes.length, links.length);
       renderGraphSidebar();
       if (!nodes.length) {
         const empty = svgEl("text", { x: width / 2, y: height / 2, "text-anchor": "middle", fill: "rgba(224,239,233,0.62)" });
-        empty.textContent = "No Wiki pages yet.";
+        empty.textContent = t("noWikiPages");
         svg.appendChild(empty);
         renderGraphInspector();
         renderMiniMap();
@@ -2105,7 +3106,7 @@ INDEX_HTML = r"""<!doctype html>
         const from = state.nodePositions[link.from_id];
         const to = state.nodePositions[link.to_id];
         if (!from || !to) return;
-        const route = routeLink(from, to);
+        const route = routeLink(from, to, link.from_id, link.to_id);
         const d = `M ${route.startX} ${route.startY} Q ${route.midX} ${route.midY} ${route.endX} ${route.endY}`;
         const glow = svgEl("path", {
           class: "graph-link-glow",
@@ -2127,14 +3128,14 @@ INDEX_HTML = r"""<!doctype html>
         const labelGroup = svgEl("g", {
           class: "graph-relation-pill",
           "data-link-label": index,
-          transform: `translate(${route.midX} ${route.midY - 8})`
+          transform: `translate(${route.midX} ${route.midY - 6})`
         });
         labelGroup.appendChild(svgEl("rect", {
           x: -labelWidth / 2,
-          y: -12,
+          y: -10,
           width: labelWidth,
-          height: 24,
-          rx: 8
+          height: 20,
+          rx: 5
         }));
         const label = svgEl("text", {
           class: "graph-relation",
@@ -2149,17 +3150,16 @@ INDEX_HTML = r"""<!doctype html>
       nodes.forEach((node) => {
         const pos = state.nodePositions[node.id];
         const color = nodeColor(node);
-        const width = graphNodeSize.width;
-        const height = graphNodeSize.height;
-        const left = -width / 2;
-        const top = -height / 2;
+        const nodeRadius = graphNodeRadius(node);
         const group = svgEl("g", {
           class: "graph-node" + (node.id === state.graphSelectedId ? " active" : ""),
           "data-node-id": node.id,
+          "data-node-radius": nodeRadius,
           transform: `translate(${pos.x} ${pos.y})`
         });
         group.setAttribute("tabindex", "0");
         group.style.cursor = "grab";
+        group.style.setProperty("--node-color", color);
         group.addEventListener("pointerdown", (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -2233,98 +3233,52 @@ INDEX_HTML = r"""<!doctype html>
           saveGraphPositions();
         });
         const tooltip = svgEl("title");
-        tooltip.textContent = `${node.title}\n${node.page_type || "note"} / ${node.id}`;
+        tooltip.textContent = `${node.title}\n${formatGraphType(node.page_type)} / ${node.id}`;
         group.appendChild(tooltip);
-        group.appendChild(svgEl("rect", {
+        group.appendChild(svgEl("circle", {
           class: "graph-hit",
-          x: left - 10,
-          y: top - 10,
-          width: width + 20,
-          height: height + 20,
-          rx: 8
-        }));
-        group.appendChild(svgEl("rect", {
-          class: "graph-card-shadow",
-          x: left + 4,
-          y: top + 6,
-          width,
-          height,
-          rx: 8
-        }));
-        group.appendChild(svgEl("rect", {
-          class: "graph-card",
-          x: left,
-          y: top,
-          width,
-          height,
-          rx: 8
-        }));
-        group.appendChild(svgEl("rect", {
-          class: "graph-band",
-          x: left,
-          y: top,
-          width: 6,
-          height,
-          rx: 4,
-          fill: color
+          cx: 0,
+          cy: 0,
+          r: 30
         }));
         group.appendChild(svgEl("circle", {
-          class: "graph-orbit",
-          cx: width / 2 - 20,
-          cy: top + 18,
-          r: 8,
-          stroke: color
+          class: "graph-dot-shadow",
+          cx: 1.2,
+          cy: 2,
+          r: nodeRadius + 2
         }));
         group.appendChild(svgEl("circle", {
-          cx: width / 2 - 20,
-          cy: top + 18,
-          r: 3.4,
+          class: "graph-dot-halo",
+          cx: 0,
+          cy: 0,
+          r: nodeRadius + 5
+        }));
+        group.appendChild(svgEl("circle", {
+          class: "graph-dot",
+          cx: 0,
+          cy: 0,
+          r: nodeRadius,
           fill: color
         }));
         const title = svgEl("text", {
           class: "graph-title",
-          x: left + 18,
-          y: top + 23
+          x: 0,
+          y: nodeRadius + 17
         });
-        title.textContent = trimLabel(node.title, 25);
+        title.textContent = trimLabel(node.title, 20);
         group.appendChild(title);
         const meta = svgEl("text", {
           class: "graph-meta",
-          x: left + 18,
-          y: top + 43
+          x: 0,
+          y: nodeRadius + 30
         });
-        meta.textContent = nodeMetaText(node);
+        meta.textContent = trimLabel(formatGraphType(node.page_type), 18);
         group.appendChild(meta);
-
-        let chipX = left + 18;
-        const chipY = top + 54;
-        const chips = (node.tags && node.tags.length ? node.tags : [node.page_type || "note"]).slice(0, 2);
-        chips.forEach((tag) => {
-          const chipText = trimLabel(tag, 10);
-          const chipWidth = tagChipWidth(chipText);
-          if (chipX + chipWidth > width / 2 - 12) return;
-          group.appendChild(svgEl("rect", {
-            class: "graph-chip-bg",
-            x: chipX,
-            y: chipY,
-            width: chipWidth,
-            height: 18,
-            rx: 6
-          }));
-          const chipLabel = svgEl("text", {
-            class: "graph-chip-text",
-            x: chipX + 8,
-            y: chipY + 12
-          });
-          chipLabel.textContent = chipText;
-          group.appendChild(chipLabel);
-          chipX += chipWidth + 6;
-        });
         nodeLayer.appendChild(group);
       });
 
       updateGraphFocusStyles();
-      graphMessage(`${nodes.length} pages / ${links.length} links`);
+      graphMessage(graphStatsText(nodes.length, links.length));
     }
     function isGraphNodeEvent(event) {
       return Boolean(event.target && event.target.closest && event.target.closest(".graph-node"));
@@ -2366,8 +3320,69 @@ INDEX_HTML = r"""<!doctype html>
       $("graphSvg").classList.remove("panning");
       try { $("graphSvg").releasePointerCapture(event.pointerId); } catch (_error) {}
     }
-    $("newBtn").addEventListener("click", () => fillEditor({ title: "", page_type: "note", tags: [], aliases: [], confidence: 0.7, content: "" }));
+    function newPage() {
+      fillEditor({ title: "", page_type: "note", tags: [], aliases: [], confidence: 0.7, content: "" });
+    }
+    async function refreshWorkspace() {
+      await loadPages();
+      message("");
+    }
+    async function reindexWorkspace() {
+      $("reindexResult").textContent = t("running");
+      const result = await api("/api/reindex", { method: "POST", body: "{}" });
+      $("reindexResult").textContent = t("indexResult", {
+        indexed: result.indexed,
+        removed: result.removed,
+        skipped: result.skipped.length
+      });
+      await loadPages();
+    }
+    async function repairWorkspace() {
+      $("healthBadge").textContent = t("repairing");
+      await api("/api/install", { method: "POST", body: "{}" });
+      await loadPages();
+      message(t("workspaceRepaired"));
+    }
+    async function importKnowledgeBase() {
+      $("importResult").textContent = t("running");
+      const result = await api("/api/import", {
+        method: "POST",
+        body: JSON.stringify({
+          path: $("importPath").value,
+          index_title: $("importTitle").value,
+          tags: $("importTags").value,
+          max_bytes: Number($("importMaxBytes").value || 512000),
+        })
+      });
+      $("importResult").textContent = t("importResult", {
+        imported: result.imported.length,
+        skipped: result.skipped.length
+      });
+      await loadPages();
+      if (result.index_page && result.index_page.id) await loadPage(result.index_page.id);
+    }
+    $("homeBtn").addEventListener("click", showDashboard);
+    $("dashboardTab").addEventListener("click", showDashboard);
+    $("dashboardRefreshBtn").addEventListener("click", () => refreshWorkspace().catch((error) => message(error.message)));
+    $("quickNewBtn").addEventListener("click", newPage);
+    $("quickGraphBtn").addEventListener("click", showGraph);
+    $("quickReindexBtn").addEventListener("click", () => reindexWorkspace().catch((error) => {
+      $("reindexResult").textContent = error.message;
+    }));
+    $("openFirstRecentBtn").addEventListener("click", () => {
+      if (state.allPages[0]) loadPage(state.allPages[0].id);
+    });
+    $("reindexBtn").addEventListener("click", () => reindexWorkspace().catch((error) => {
+      $("reindexResult").textContent = error.message;
+    }));
+    $("importBtn").addEventListener("click", () => importKnowledgeBase().catch((error) => {
+      $("importResult").textContent = error.message;
+    }));
+    $("newBtn").addEventListener("click", newPage);
     $("graphBtn").addEventListener("click", showGraph);
+    $("languageBtn").addEventListener("click", () => {
+      setLanguage(state.language === "zh" ? "en" : "zh");
+    });
     $("editorTab").addEventListener("click", showEditor);
     $("graphTab").addEventListener("click", showGraph);
     $("refreshBtn").addEventListener("click", loadPages);
@@ -2406,18 +3421,18 @@ INDEX_HTML = r"""<!doctype html>
     $("archiveBtn").addEventListener("click", async () => {
       const id = $("pageId").value;
       if (!id) return;
-      if (!confirm("Archive this page?")) return;
+      if (!confirm(t("archiveConfirm"))) return;
       await api(`/api/pages/${encodeURIComponent(id)}?archive=true`, { method: "DELETE" });
       state.activeId = "";
       fillEditor({ title: "", page_type: "note", tags: [], aliases: [], confidence: 0.7, content: "" });
       await loadPages();
-      message("Archived.");
+      message(t("archived"));
     });
     $("linkBtn").addEventListener("click", async () => {
       const from = $("pageId").value || $("title").value;
       const to = $("linkTarget").value;
       if (!from || !to) {
-        message("Choose the current page and a target page first.");
+        message(t("chooseLink"));
         return;
       }
       await api("/api/links", {
@@ -2429,15 +3444,17 @@ INDEX_HTML = r"""<!doctype html>
         })
       });
       $("linkTarget").value = "";
-      message("Linked.");
+      message(t("linked"));
     });
     $("editor").addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = await api("/api/pages", { method: "POST", body: JSON.stringify(pagePayload()) });
       fillEditor(data.page);
       await loadPages();
-      message("Saved.");
+      message(t("saved"));
     });
+    applyStaticTranslations();
+    updateViewHeader();
     loadPages().catch((error) => message(error.message));
   </script>
 </body>

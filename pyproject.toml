@@ -35,6 +35,7 @@ dev = [
 nanobot-wiki = "nanobot_llm_wiki.cli:main"
 
 [project.entry-points."nanobot.tools"]
+wiki_doctor = "nanobot_llm_wiki.tools:WikiDoctorTool"
 wiki_search = "nanobot_llm_wiki.tools:WikiSearchTool"
 wiki_read = "nanobot_llm_wiki.tools:WikiReadTool"
 wiki_upsert = "nanobot_llm_wiki.tools:WikiUpsertTool"

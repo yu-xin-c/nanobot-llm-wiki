@@ -8,8 +8,21 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.context import ToolContext
 
-from nanobot_llm_wiki.formatting import format_page, format_search_results, format_status
+from nanobot_llm_wiki.diagnostics import diagnose_workspace
+from nanobot_llm_wiki.formatting import (
+    format_doctor,
+    format_page,
+    format_search_results,
+    format_status,
+)
+from nanobot_llm_wiki.paths import default_workspace, expand_path
 from nanobot_llm_wiki.storage import WikiStore
+
+
+def _error_text(exc: BaseException) -> str:
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 class _WikiTool(Tool):
@@ -119,16 +132,19 @@ class WikiUpsertTool(_WikiTool):
         source_cursors: list[int] | None = None,
         mode: str = "replace",
     ) -> str:
-        page = self.store.upsert_page(
-            title=title,
-            content=content,
-            page_type=page_type,
-            tags=tags or [],
-            aliases=aliases or [],
-            confidence=confidence,
-            source_cursors=source_cursors or [],
-            mode=mode,
-        )
+        try:
+            page = self.store.upsert_page(
+                title=title,
+                content=content,
+                page_type=page_type,
+                tags=tags or [],
+                aliases=aliases or [],
+                confidence=confidence,
+                source_cursors=source_cursors or [],
+                mode=mode,
+            )
+        except ValueError as exc:
+            return f"Error: {_error_text(exc)}"
         self.store.write_memory_bridge()
         return f"Saved Wiki page `{page.title}` (`{page.id}`) with {len(page.content)} characters."
 
@@ -155,7 +171,10 @@ class WikiLinkTool(_WikiTool):
         }
 
     async def execute(self, from_selector: str, to_selector: str, relation: str = "related") -> str:
-        from_page, to_page = self.store.link_pages(from_selector, to_selector, relation)
+        try:
+            from_page, to_page = self.store.link_pages(from_selector, to_selector, relation)
+        except KeyError as exc:
+            return f"Error: {_error_text(exc)}"
         return f"Linked `{from_page.title}` -> `{to_page.title}` as `{relation or 'related'}`."
 
 
@@ -180,7 +199,10 @@ class WikiForgetTool(_WikiTool):
         }
 
     async def execute(self, selector: str, archive: bool = True) -> str:
-        page = self.store.forget_page(selector, archive=archive)
+        try:
+            page = self.store.forget_page(selector, archive=archive)
+        except KeyError as exc:
+            return f"Error: {_error_text(exc)}"
         self.store.write_memory_bridge()
         action = "Archived" if archive else "Deleted"
         return f"{action} Wiki page `{page.title}` (`{page.id}`)."
@@ -239,14 +261,17 @@ class WikiImportTool(_WikiTool):
         relation: str = "contains",
         max_bytes: int = 512_000,
     ) -> str:
-        result = self.store.import_knowledge_base(
-            path,
-            index_title=index_title,
-            tags=tags or [],
-            page_type=page_type,
-            relation=relation,
-            max_bytes=max_bytes,
-        )
+        try:
+            result = self.store.import_knowledge_base(
+                path,
+                index_title=index_title,
+                tags=tags or [],
+                page_type=page_type,
+                relation=relation,
+                max_bytes=max_bytes,
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            return f"Error: {_error_text(exc)}"
         skipped = f", skipped {len(result.skipped)} files" if result.skipped else ""
         return (
             f"Imported knowledge base `{result.index_page.title}` (`{result.index_page.id}`) "
@@ -273,3 +298,33 @@ class WikiStatusTool(_WikiTool):
 
     async def execute(self) -> str:
         return format_status(self.store.status())
+
+
+class WikiDoctorTool(Tool):
+    _scopes = {"core", "subagent"}
+
+    def __init__(self, workspace: str | Path | None = None):
+        self.workspace = expand_path(workspace) if workspace else default_workspace()
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        return cls(workspace=ctx.workspace)
+
+    @property
+    def name(self) -> str:
+        return "wiki_doctor"
+
+    @property
+    def description(self) -> str:
+        return "Run read-only health checks for the NanoBot LLM Wiki installation and search index."
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self) -> str:
+        return format_doctor(diagnose_workspace(self.workspace))

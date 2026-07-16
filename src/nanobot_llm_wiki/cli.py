@@ -7,11 +7,23 @@ import json
 import sys
 from pathlib import Path
 
-from nanobot_llm_wiki.formatting import format_page, format_search_results, format_status
+from nanobot_llm_wiki.diagnostics import diagnose_workspace
+from nanobot_llm_wiki.formatting import (
+    format_doctor,
+    format_page,
+    format_search_results,
+    format_status,
+)
 from nanobot_llm_wiki.installer import install_workspace
 from nanobot_llm_wiki.paths import default_workspace
 from nanobot_llm_wiki.storage import WikiStore
 from nanobot_llm_wiki.ui import run_ui
+
+
+def _error_text(exc: BaseException) -> str:
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,8 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     install = sub.add_parser("install", help="Initialize Wiki memory in a NanoBot workspace.")
     install.add_argument("--force-skill", action="store_true", help="Overwrite generated llm-wiki skill.")
 
-    sub.add_parser("doctor", help="Check paths and installation state.")
+    doctor = sub.add_parser("doctor", help="Check paths and installation state without changing files.")
+    doctor.add_argument("--json", action="store_true", help="Print machine-readable diagnostics.")
     sub.add_parser("status", help="Show Wiki status.")
+    sub.add_parser("reindex", help="Rebuild the SQLite index from Markdown pages.")
 
     search = sub.add_parser("search", help="Search Wiki pages.")
     search.add_argument("query")
@@ -80,15 +94,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
-    store = WikiStore(workspace)
-
     if args.command == "doctor":
-        result = install_workspace(workspace)
-        print("NanoBot LLM Wiki is installed.\n")
-        print(format_status(result))
-        return 0
+        result = diagnose_workspace(workspace)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(format_doctor(result))
+        return 0 if result["ok"] else 1
+
+    store = WikiStore(workspace)
     if args.command == "status":
         print(format_status(store.status()))
+        return 0
+    if args.command == "reindex":
+        print(json.dumps(store.reindex_from_disk(), ensure_ascii=False, indent=2))
         return 0
     if args.command == "search":
         print(format_search_results(store.search(args.query, limit=args.limit, tag=args.tag)))
@@ -101,26 +120,34 @@ def main(argv: list[str] | None = None) -> int:
         print(format_page(page))
         return 0
     if args.command == "upsert":
-        page = store.upsert_page(
-            title=args.title,
-            content=args.content,
-            page_type=args.page_type,
-            tags=args.tag,
-            aliases=args.alias,
-            mode=args.mode,
-        )
+        try:
+            page = store.upsert_page(
+                title=args.title,
+                content=args.content,
+                page_type=args.page_type,
+                tags=args.tag,
+                aliases=args.alias,
+                mode=args.mode,
+            )
+        except ValueError as exc:
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
+            return 1
         store.write_memory_bridge()
         print(f"Saved {page.title} ({page.id})")
         return 0
     if args.command == "import":
-        result = store.import_knowledge_base(
-            args.path,
-            index_title=args.index_title,
-            tags=args.tag,
-            page_type=args.page_type,
-            relation=args.relation,
-            max_bytes=args.max_bytes,
-        )
+        try:
+            result = store.import_knowledge_base(
+                args.path,
+                index_title=args.index_title,
+                tags=args.tag,
+                page_type=args.page_type,
+                relation=args.relation,
+                max_bytes=args.max_bytes,
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
+            return 1
         print(
             json.dumps(
                 {
@@ -145,12 +172,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "forget":
-        page = store.forget_page(args.selector, archive=not args.delete)
+        try:
+            page = store.forget_page(args.selector, archive=not args.delete)
+        except KeyError as exc:
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
+            return 1
         store.write_memory_bridge()
         print(f"Forgot {page.title} ({page.id})")
         return 0
     if args.command == "link":
-        from_page, to_page = store.link_pages(args.from_selector, args.to_selector, args.relation)
+        try:
+            from_page, to_page = store.link_pages(args.from_selector, args.to_selector, args.relation)
+        except KeyError as exc:
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
+            return 1
         print(f"Linked {from_page.title} -> {to_page.title} ({args.relation or 'related'})")
         return 0
     if args.command == "dream":
