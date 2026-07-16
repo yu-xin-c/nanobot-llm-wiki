@@ -15,5 +15,7 @@ jobs:
         run: uv run --extra dev pytest -q
       - name: Lint
         run: uv run --extra dev ruff check src tests
+      - name: Smoke-test the NanoBot installer
+        run: bash tests/smoke_install.sh
       - name: Build package
         run: uv build

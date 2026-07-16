@@ -979,6 +979,30 @@ class WikiStore:
         memory_path.write_text(updated, encoding="utf-8")
         return memory_path
 
+    def remove_memory_bridge(self) -> bool:
+        """Remove only the generated Wiki block from NanoBot's memory file."""
+        memory_path = self.workspace / "memory" / "MEMORY.md"
+        if not memory_path.is_file():
+            return False
+
+        existing = memory_path.read_text(encoding="utf-8")
+        start = existing.find(BRIDGE_START)
+        end = existing.find(BRIDGE_END, start + len(BRIDGE_START))
+        if start < 0 or end < 0:
+            return False
+
+        end += len(BRIDGE_END)
+        before = existing[:start].rstrip()
+        after = existing[end:].lstrip()
+        if before and after:
+            updated = f"{before}\n\n{after}"
+        elif before:
+            updated = f"{before}\n"
+        else:
+            updated = after
+        memory_path.write_text(updated, encoding="utf-8")
+        return True
+
     def write_skill(self, *, force: bool = False) -> Path:
         skill_dir = self.workspace / "skills" / "llm-wiki"
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -989,6 +1013,22 @@ class WikiStore:
                 return skill_path
         skill_path.write_text(default_skill_markdown(), encoding="utf-8")
         return skill_path
+
+    def remove_generated_skill(self) -> bool:
+        """Remove the generated skill without touching a user-owned replacement."""
+        skill_dir = self.workspace / "skills" / "llm-wiki"
+        skill_path = skill_dir / "SKILL.md"
+        if not skill_path.is_file():
+            return False
+        if SKILL_MARKER not in skill_path.read_text(encoding="utf-8"):
+            return False
+
+        skill_path.unlink()
+        try:
+            skill_dir.rmdir()
+        except OSError:
+            pass
+        return True
 
 
 def default_skill_markdown() -> str:

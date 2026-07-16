@@ -32,6 +32,43 @@ def test_cli_install_and_search(tmp_path, capsys) -> None:
     assert "Projects" in out
 
 
+def test_cli_uninstall_detaches_generated_files_and_keeps_data(tmp_path, capsys) -> None:
+    memory_path = tmp_path / "memory" / "MEMORY.md"
+    memory_path.parent.mkdir(parents=True)
+    memory_path.write_text("User-owned memory.\n", encoding="utf-8")
+
+    assert main(["--workspace", str(tmp_path), "install"]) == 0
+    page_path = tmp_path / "memory" / "wiki" / "pages" / "projects.md"
+    skill_path = tmp_path / "skills" / "llm-wiki" / "SKILL.md"
+    assert page_path.exists()
+    assert skill_path.exists()
+    with memory_path.open("a", encoding="utf-8") as memory_file:
+        memory_file.write("\nUser-owned trailing memory.\n")
+    capsys.readouterr()
+
+    assert main(["--workspace", str(tmp_path), "uninstall"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["memory_bridge_removed"] is True
+    assert result["skill_removed"] is True
+    assert "User-owned memory." in memory_path.read_text(encoding="utf-8")
+    assert "User-owned trailing memory." in memory_path.read_text(encoding="utf-8")
+    assert "nanobot-llm-wiki:start" not in memory_path.read_text(encoding="utf-8")
+    assert not skill_path.exists()
+    assert page_path.exists()
+
+
+def test_cli_uninstall_preserves_a_user_owned_skill(tmp_path, capsys) -> None:
+    assert main(["--workspace", str(tmp_path), "install"]) == 0
+    skill_path = tmp_path / "skills" / "llm-wiki" / "SKILL.md"
+    skill_path.write_text("# My custom Wiki workflow\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert main(["--workspace", str(tmp_path), "uninstall"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["skill_removed"] is False
+    assert skill_path.read_text(encoding="utf-8") == "# My custom Wiki workflow\n"
+
+
 def test_cli_link(tmp_path, capsys) -> None:
     assert main(["--workspace", str(tmp_path), "install"]) == 0
     assert (

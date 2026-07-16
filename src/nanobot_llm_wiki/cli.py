@@ -14,7 +14,7 @@ from nanobot_llm_wiki.formatting import (
     format_search_results,
     format_status,
 )
-from nanobot_llm_wiki.installer import install_workspace
+from nanobot_llm_wiki.installer import install_workspace, uninstall_workspace
 from nanobot_llm_wiki.paths import default_workspace
 from nanobot_llm_wiki.storage import WikiStore
 from nanobot_llm_wiki.ui import run_ui
@@ -33,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     install = sub.add_parser("install", help="Initialize Wiki memory in a NanoBot workspace.")
     install.add_argument("--force-skill", action="store_true", help="Overwrite generated llm-wiki skill.")
+
+    sub.add_parser(
+        "uninstall",
+        help="Detach generated workspace integration while keeping Wiki data.",
+    )
 
     doctor = sub.add_parser("doctor", help="Check paths and installation state without changing files.")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable diagnostics.")
@@ -97,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "install":
         result = install_workspace(workspace, force_skill=args.force_skill)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "uninstall":
+        print(json.dumps(uninstall_workspace(workspace), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "doctor":

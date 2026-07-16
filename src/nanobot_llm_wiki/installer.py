@@ -51,6 +51,18 @@ def install_workspace(workspace: str | Path | None = None, *, force_skill: bool 
     }
 
 
+def uninstall_workspace(workspace: str | Path | None = None) -> dict[str, Any]:
+    """Detach generated NanoBot integration files while retaining Wiki data."""
+    store = WikiStore(workspace, create=False)
+    return {
+        "workspace": str(store.workspace),
+        "memory_bridge_removed": store.remove_memory_bridge(),
+        "skill_removed": store.remove_generated_skill(),
+        "data_path": str(store.wiki_dir),
+        "data_retained": store.wiki_dir.exists(),
+    }
+
+
 def write_user_config(store: WikiStore) -> Path:
     config_path = store.wiki_dir / "config.toml"
     if config_path.exists():

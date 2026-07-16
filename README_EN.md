@@ -32,7 +32,9 @@
   <a href="#project-status">Project Status</a>
 </p>
 
-> **In one sentence:** NanoBot LLM Wiki is a local-first long-term memory plugin for NanoBot. It stores user preferences, project context, past decisions, and imported documents as Markdown pages, then uses SQLite full-text search and a relationship graph to recover the right context after long conversations.
+> **Why this exists:** NanoBot's [official memory design](https://github.com/HKUDS/nanobot/blob/main/docs/memory.md) already provides layered storage, Dream consolidation, and Git-backed history, but its native memory is still centered on `history.jsonl` and Markdown files and does not yet include a user-facing, topic-oriented Wiki, relationship graph, or visual management interface. Meanwhile, OpenClaw ships [`memory-wiki`](https://docs.openclaw.ai/plugins/memory-wiki) as a bundled plugin that adds a maintained, structured Wiki layer beside active memory, providing a clear open-source precedent for this product direction.
+
+> **In one sentence:** NanoBot LLM Wiki brings that pattern to NanoBot. It stores user preferences, project context, past decisions, and imported documents as local Markdown pages, then adds SQLite full-text search, a relationship graph, and a visual interface so people and agents can search, verify, edit, and continuously maintain long-term memory.
 
 ## Why This Plugin
 
@@ -72,25 +74,38 @@ Edit Markdown content together with page type, tags, aliases, confidence, and ty
 
 ### Install With One Command
 
-Prerequisites:
-
-- [`uv`](https://docs.astral.sh/uv/) is installed.
-- `~/.nanobot/config.json` already contains a working NanoBot model configuration.
+The only installation prerequisite is [`uv`](https://docs.astral.sh/uv/). A model API key is
+needed before NanoBot starts, but not while installing this plugin.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh | bash
 ```
 
-Start NanoBot:
+The installer adds NanoBot when it is missing, attaches the plugin to uv's NanoBot Python
+environment, exposes `nanobot-wiki`, initializes the workspace, and runs `doctor`. Existing uv
+NanoBot plugins and Wiki data are preserved, and rerunning the command is a safe update.
+
+If the installer reports that uv's command directory is not on `PATH`, run this once:
+
+```bash
+uv tool update-shell
+```
+
+Before the first NanoBot launch, complete the model setup. Skip this if NanoBot is already configured:
+
+```bash
+nanobot onboard
+```
+
+Then start NanoBot:
 
 ```bash
 nanobot gateway
 ```
 
-Check the plugin and open its management UI:
+Open the Wiki management UI:
 
 ```bash
-nanobot-wiki doctor
 nanobot-wiki ui --open
 ```
 
@@ -98,7 +113,10 @@ The default URL is [http://127.0.0.1:8766](http://127.0.0.1:8766). The interface
 
 ### Verify The Installation
 
+The installer already runs a complete diagnostic pass. You can repeat it at any time:
+
 ```bash
+nanobot-wiki doctor
 nanobot-wiki status
 nanobot-wiki search "Projects"
 ```
@@ -110,13 +128,9 @@ wiki_doctor, wiki_forget, wiki_import, wiki_link,
 wiki_read, wiki_search, wiki_status, wiki_upsert
 ```
 
-## Installation Options
+## Installation And Maintenance
 
-### Option A: Installer Script
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh | bash
-```
+### Customize The Installer
 
 Use a custom workspace:
 
@@ -132,9 +146,36 @@ curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scri
   | NANOBOT_LLM_WIKI_REPO=https://github.com/your-name/nanobot-llm-wiki bash
 ```
 
-The installer uses `uv tool install --force --with` to install NanoBot with this plugin and initialize the Wiki workspace. It does not create a model API key or overwrite an existing `config.json`.
+The installer does not create model API keys, overwrite `config.json`, replace user-maintained
+`MEMORY.md` content, modify Wiki pages, or overwrite a custom skill. It only updates its marked
+memory bridge and generated skill.
 
-### Option B: Existing Virtual Environment
+### Upgrade
+
+Rerun the Quick Start installer command. It updates only the Wiki package in NanoBot's environment,
+preserves the workspace and other plugins, and runs diagnostics again.
+
+After `uv tool upgrade nanobot-ai`, rerun this project's installer as well. uv may rebuild NanoBot's
+isolated environment during an upgrade; the installer safely reattaches the Wiki plugin.
+
+### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/uninstall.sh | bash
+```
+
+The uninstaller removes the generated memory bridge, generated skill, plugin package, and
+`nanobot-wiki` command. It keeps NanoBot, other plugins, and all data under `memory/wiki/`, so a
+later reinstall reconnects the existing Wiki. Pass the same `NANOBOT_WORKSPACE` when uninstalling
+from a custom workspace.
+
+Delete the retained data only when you are certain it is no longer needed:
+
+```bash
+rm -rf ~/.nanobot/workspace/memory/wiki
+```
+
+### Existing Virtual Environment
 
 ```bash
 python -m pip install git+https://github.com/yu-xin-c/nanobot-llm-wiki
@@ -142,7 +183,7 @@ nanobot-wiki --workspace ~/.nanobot/workspace install
 nanobot gateway
 ```
 
-### Option C: Local Development
+### Local Development
 
 ```bash
 git clone https://github.com/yu-xin-c/nanobot-llm-wiki
@@ -399,7 +440,7 @@ Available now:
 - Eight NanoBot tools.
 - Page management, knowledge imports, graph, diagnostics, and bilingual UI.
 - Index rebuild after manual Markdown edits.
-- Automated CLI, registration, storage, and HTTP API tests.
+- Automated CLI, registration, storage, HTTP API, and real isolated NanoBot installation tests.
 
 Current limitations:
 
@@ -415,6 +456,7 @@ Current limitations:
 uv sync --extra dev
 uv run --extra dev pytest -q
 uv run --extra dev ruff check src tests
+bash tests/smoke_install.sh
 uv build
 ```
 
@@ -425,21 +467,20 @@ uv run nanobot-wiki --workspace /tmp/nanobot-wiki-demo install
 uv run nanobot-wiki --workspace /tmp/nanobot-wiki-demo ui --open
 ```
 
-CI runs tests, Ruff, and package builds on pushes and pull requests.
+CI runs unit tests, Ruff, a NanoBot installation smoke test, and package builds on pushes and pull requests.
 
 ## FAQ
 
 ### NanoBot Does Not Show The Wiki Tools
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/yu-xin-c/nanobot-llm-wiki/main/scripts/install.sh | bash
 nanobot-wiki doctor
-uv tool install --force \
-  --with git+https://github.com/yu-xin-c/nanobot-llm-wiki \
-  nanobot-ai
 nanobot gateway -v
 ```
 
-NanoBot discovers tools from its active Python environment, so the plugin must be installed into that same environment.
+NanoBot discovers tools from its active Python environment. Rerunning the installer attaches the
+plugin to that environment while preserving its other extensions.
 
 ### Search Misses A Manually Edited Page
 
