@@ -276,7 +276,7 @@ def run_ui(
 
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1639,7 +1639,7 @@ INDEX_HTML = r"""<!doctype html>
           <button id="homeBtn" class="ghost" title="概览" data-i18n="home" data-i18n-title="dashboard">首页</button>
           <button id="newBtn" title="新建页面" data-i18n-title="newPage"><span class="button-mark">+</span><span data-i18n="new">新建</span></button>
           <button id="graphBtn" class="ghost" title="图谱视图" data-i18n="graph" data-i18n-title="graphView">图谱</button>
-          <button id="languageBtn" class="ghost language-toggle" type="button" title="Switch to English" aria-label="Switch to English">EN</button>
+          <button id="languageBtn" class="ghost language-toggle" type="button" title="Switch to Chinese" aria-label="Switch to Chinese">中文</button>
         </div>
       </div>
       <div class="search">
@@ -1870,7 +1870,7 @@ INDEX_HTML = r"""<!doctype html>
     </main>
   </div>
   <script>
-    const languageStoreKey = "nanobot_llm_wiki_language_v1";
+    const languageStoreKey = "nanobot_llm_wiki_language_v2";
     const translations = {
       zh: {
         brandSubtitle: "本地记忆工作区",
@@ -2219,9 +2219,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     function loadLanguage() {
       try {
-        return localStorage.getItem(languageStoreKey) === "en" ? "en" : "zh";
+        return localStorage.getItem(languageStoreKey) === "zh" ? "zh" : "en";
       } catch (_error) {
-        return "zh";
+        return "en";
       }
     }
     function t(key, values = {}) {

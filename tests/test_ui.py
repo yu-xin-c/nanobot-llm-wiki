@@ -41,10 +41,10 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
             html = response.read().decode("utf-8")
         assert "NanoBot LLM Wiki" in html
         assert "Memory Dashboard" in html
-        assert '<html lang="zh-CN">' in html
+        assert '<html lang="en">' in html
         assert 'id="languageBtn"' in html
         assert 'data-i18n="dashboard"' in html
-        assert "nanobot_llm_wiki_language_v1" in html
+        assert "nanobot_llm_wiki_language_v2" in html
         assert "const translations" in html
         assert "记忆概览" in html
         assert "healthBadge" in html

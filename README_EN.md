@@ -43,7 +43,7 @@ Conversation memory commonly has three problems: context gets truncated, old fac
 - **Searchable:** titles, content, tags, and aliases are indexed by SQLite full-text search.
 - **Connected:** pages can use typed relationships such as `tracks`, `uses`, and `depends_on`.
 - **Manageable:** the built-in UI includes a dashboard, page editor, knowledge graph, archive actions, imports, and index repair.
-- **Bilingual:** switch the whole interface between Chinese and English from the header. Chinese is the first-run default, and the browser remembers the selection.
+- **Bilingual:** switch the whole interface between English and Chinese from the header. English is the first-run default, and the browser remembers the selection.
 - **Agent native:** eight Wiki tools are registered through NanoBot Python entry points without patching NanoBot core.
 
 ## Interface Preview
@@ -94,7 +94,7 @@ nanobot-wiki doctor
 nanobot-wiki ui --open
 ```
 
-The default URL is [http://127.0.0.1:8766](http://127.0.0.1:8766). The interface starts in Chinese on first use; select `EN` in the header to switch to English.
+The default URL is [http://127.0.0.1:8766](http://127.0.0.1:8766). The interface starts in English on first use; select `中文` in the header to switch to Chinese.
 
 ### Verify The Installation
 
