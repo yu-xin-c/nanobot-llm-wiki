@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import threading
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+import pytest
 
 from nanobot_llm_wiki.storage import WikiStore
 from nanobot_llm_wiki.ui import build_server
@@ -52,9 +55,12 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
         assert "function graphNodeRadius" in html
         assert 'const graphDotRadius = 8' in html
         assert "lod-compact" in html
+        assert "readOnlyDemo" in html
+        assert 'new URL(normalizedPath, window.location.href)' in html
 
         status = _json_get(base_url + "/api/status")
         assert status["pages"] == 1
+        assert status["read_only"] is False
 
         health = _json_get(base_url + "/api/doctor")
         assert health["health"] == "unhealthy"
@@ -129,6 +135,37 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
             method="DELETE",
         )
         assert deleted["archived"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_ui_read_only_mode_rejects_mutations(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(title="Public Demo", content="Safe to browse.", tags=["demo"])
+    server = build_server(tmp_path, "127.0.0.1", 0, read_only=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status = _json_get(base_url + "/api/status")
+        assert status["read_only"] is True
+        assert _json_get(base_url + "/api/pages/public-demo")["page"]["title"] == "Public Demo"
+
+        with pytest.raises(HTTPError) as create_error:
+            _json_request(
+                base_url + "/api/pages",
+                method="POST",
+                payload={"title": "Blocked", "content": "Must not be saved."},
+            )
+        assert create_error.value.code == 405
+        assert "read-only mode" in create_error.value.read().decode("utf-8")
+
+        with pytest.raises(HTTPError) as delete_error:
+            _json_request(base_url + "/api/pages/public-demo", method="DELETE")
+        assert delete_error.value.code == 405
+        assert [page.title for page in store.list_pages()] == ["Public Demo"]
     finally:
         server.shutdown()
         thread.join(timeout=5)

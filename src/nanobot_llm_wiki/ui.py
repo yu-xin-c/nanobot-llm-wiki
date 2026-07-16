@@ -50,7 +50,13 @@ def _link_to_dict(link: Any) -> dict[str, Any]:
     }
 
 
-def build_server(workspace: str | Path | None, host: str, port: int) -> ThreadingHTTPServer:
+def build_server(
+    workspace: str | Path | None,
+    host: str,
+    port: int,
+    *,
+    read_only: bool = False,
+) -> ThreadingHTTPServer:
     store = WikiStore(workspace)
 
     class WikiUIHandler(BaseHTTPRequestHandler):
@@ -91,13 +97,24 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
             value = self.path[len(prefix):].split("?", 1)[0]
             return unquote(value).strip("/")
 
+        def _reject_read_only_write(self) -> bool:
+            if not read_only:
+                return False
+            self._send_json(
+                {"error": "This Wiki UI is running in read-only mode."},
+                HTTPStatus.METHOD_NOT_ALLOWED,
+            )
+            return True
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
                 self._send_html()
                 return
             if parsed.path == "/api/status":
-                self._send_json(store.status())
+                status = store.status()
+                status["read_only"] = read_only
+                self._send_json(status)
                 return
             if parsed.path == "/api/doctor":
                 self._send_json(diagnose_workspace(store.workspace))
@@ -137,6 +154,8 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:
+            if self._reject_read_only_write():
+                return
             parsed = urlparse(self.path)
             if parsed.path == "/api/install":
                 self._send_json(install_workspace(store.workspace))
@@ -215,6 +234,8 @@ def build_server(workspace: str | Path | None, host: str, port: int) -> Threadin
             self._send_json({"page": _page_to_dict(page)})
 
         def do_DELETE(self) -> None:
+            if self._reject_read_only_write():
+                return
             parsed = urlparse(self.path)
             if not parsed.path.startswith("/api/pages/"):
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -239,8 +260,9 @@ def run_ui(
     host: str = "127.0.0.1",
     port: int = 8766,
     open_browser: bool = False,
+    read_only: bool = False,
 ) -> None:
-    server = build_server(workspace, host, port)
+    server = build_server(workspace, host, port, read_only=read_only)
     url = f"http://{server.server_address[0]}:{server.server_address[1]}"
     print(f"NanoBot LLM Wiki UI: {url}")
     if open_browser:
@@ -610,6 +632,23 @@ INDEX_HTML = r"""<!doctype html>
       text-transform: uppercase;
       margin-bottom: 6px;
     }
+    .eyebrow-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .read-only-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      border: 1px solid #b9d8d2;
+      border-radius: 4px;
+      background: #eaf6f3;
+      color: #17695f;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 2px 7px;
+    }
     .view-title {
       margin: 0;
       font-size: 27px;
@@ -968,6 +1007,15 @@ INDEX_HTML = r"""<!doctype html>
     }
     .hidden {
       display: none !important;
+    }
+    .dashboard-grid.single-column {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    #editor input[readonly],
+    #editor textarea[readonly] {
+      background: var(--surface-soft);
+      color: var(--text-soft);
+      cursor: text;
     }
     .graph-panel {
       display: grid;
@@ -1605,7 +1653,10 @@ INDEX_HTML = r"""<!doctype html>
     <main class="workspace">
       <div class="workbar">
         <div>
-          <div class="eyebrow" data-i18n="knowledgeConsole">知识控制台</div>
+          <div class="eyebrow-line">
+            <div class="eyebrow" data-i18n="knowledgeConsole">知识控制台</div>
+            <span id="readOnlyBadge" class="read-only-badge hidden" data-i18n="readOnlyDemo">只读演示</span>
+          </div>
           <h1 id="viewTitle" class="view-title">记忆概览</h1>
           <div id="viewSubtitle" class="view-subtitle">本地持久记忆</div>
         </div>
@@ -1635,7 +1686,7 @@ INDEX_HTML = r"""<!doctype html>
             <button type="button" id="quickReindexBtn" data-i18n="rebuildIndex">重建索引</button>
           </div>
         </div>
-        <div class="dashboard-grid">
+        <div id="dashboardGrid" class="dashboard-grid">
           <div class="dashboard-panel">
             <div class="dashboard-panel-header">
               <div>
@@ -1646,7 +1697,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <div id="recentPages" class="dashboard-list"></div>
           </div>
-          <div class="dashboard-panel">
+          <div id="writeToolsPanel" class="dashboard-panel">
             <div class="dashboard-panel-header">
               <div>
                 <div class="dashboard-panel-title" data-i18n="knowledgeBase">知识库</div>
@@ -1724,7 +1775,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
           <div class="toolbar">
-            <button class="primary" type="submit" data-i18n="save">保存</button>
+            <button class="primary" type="submit" id="saveBtn" data-i18n="save">保存</button>
             <button type="button" id="linkBtn" data-i18n="link">创建关系</button>
             <button type="button" id="refreshBtn" data-i18n="refresh">刷新</button>
             <button class="danger" type="button" id="archiveBtn" data-i18n="archive">归档</button>
@@ -1836,6 +1887,7 @@ INDEX_HTML = r"""<!doctype html>
         types: "类型",
         cursor: "游标",
         knowledgeConsole: "知识控制台",
+        readOnlyDemo: "只读演示",
         memoryDashboard: "记忆概览",
         localDurableMemory: "本地持久记忆",
         editor: "编辑器",
@@ -1962,6 +2014,7 @@ INDEX_HTML = r"""<!doctype html>
         types: "Types",
         cursor: "Cursor",
         knowledgeConsole: "Knowledge Console",
+        readOnlyDemo: "Read-only demo",
         memoryDashboard: "Memory Dashboard",
         localDurableMemory: "Local durable memory",
         editor: "Editor",
@@ -2132,6 +2185,7 @@ INDEX_HTML = r"""<!doctype html>
       visiblePages: [],
       status: {},
       health: null,
+      readOnly: false,
       language: loadLanguage(),
       activePage: null,
       listQuery: "",
@@ -2151,6 +2205,18 @@ INDEX_HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     const message = (text) => { $("message").textContent = text || ""; };
     const graphMessage = (text) => { $("graphMessage").textContent = text || ""; };
+    function applyReadOnlyMode() {
+      const readOnly = state.readOnly;
+      $("readOnlyBadge").classList.toggle("hidden", !readOnly);
+      $("writeToolsPanel").classList.toggle("hidden", readOnly);
+      $("dashboardGrid").classList.toggle("single-column", readOnly);
+      ["newBtn", "quickNewBtn", "quickReindexBtn", "saveBtn", "linkBtn", "archiveBtn"].forEach((id) => {
+        $(id).classList.toggle("hidden", readOnly);
+      });
+      ["title", "pageType", "tags", "confidence", "aliases", "content", "linkTarget", "linkRelation"].forEach((id) => {
+        $(id).readOnly = readOnly;
+      });
+    }
     function loadLanguage() {
       try {
         return localStorage.getItem(languageStoreKey) === "en" ? "en" : "zh";
@@ -2234,7 +2300,9 @@ INDEX_HTML = r"""<!doctype html>
       mode: "replace"
     });
     async function api(path, options = {}) {
-      const res = await fetch(path, {
+      const normalizedPath = String(path).replace(/^\/+/, "");
+      const requestUrl = new URL(normalizedPath, window.location.href);
+      const res = await fetch(requestUrl, {
         headers: { "Content-Type": "application/json" },
         ...options
       });
@@ -2420,7 +2488,7 @@ INDEX_HTML = r"""<!doctype html>
         copy.appendChild(detail);
         row.appendChild(indicator);
         row.appendChild(copy);
-        if (check.action === "reindex") {
+        if (!state.readOnly && check.action === "reindex") {
           const repair = document.createElement("button");
           repair.type = "button";
           repair.textContent = t("repairIndex");
@@ -2428,7 +2496,7 @@ INDEX_HTML = r"""<!doctype html>
             $("reindexResult").textContent = error.message;
           }));
           row.appendChild(repair);
-        } else if (check.action === "install") {
+        } else if (!state.readOnly && check.action === "install") {
           const repair = document.createElement("button");
           repair.type = "button";
           repair.textContent = t("repairSetup");
@@ -2512,6 +2580,8 @@ INDEX_HTML = r"""<!doctype html>
       const [status, health] = await Promise.all([api("/api/status"), api("/api/doctor")]);
       state.status = status;
       state.health = health;
+      state.readOnly = Boolean(status.read_only);
+      applyReadOnlyMode();
       renderStatus();
       renderDashboard();
     }

@@ -1,0 +1,17 @@
+[Unit]
+Description=NanoBot LLM Wiki management UI
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/nanobot-llm-wiki/app
+ExecStart=/opt/nanobot-llm-wiki/venv/bin/nanobot-wiki --workspace /opt/nanobot-llm-wiki/workspace ui --host 172.17.0.1 --port 8766 --read-only
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

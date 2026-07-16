@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8766)
     ui.add_argument("--open", action="store_true", help="Open the page in the default browser.")
+    ui.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Disable all mutations for a public or shared demo.",
+    )
 
     return parser
 
@@ -197,7 +202,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "ui":
-        run_ui(workspace, host=args.host, port=args.port, open_browser=args.open)
+        run_ui(
+            workspace,
+            host=args.host,
+            port=args.port,
+            open_browser=args.open,
+            read_only=args.read_only,
+        )
         return 0
 
     parser.error(f"unknown command: {args.command}")

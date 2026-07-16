@@ -1,0 +1,10 @@
+# Pair this route with nanobot-llm-wiki-ui.service, which starts the UI in
+# read-only mode on the Docker bridge. Add the handlers to an existing site.
+example.com {
+    redir /wiki /wiki/ 308
+    handle_path /wiki/* {
+        reverse_proxy host.docker.internal:8766
+    }
+
+    # Add the site's other handlers here.
+}

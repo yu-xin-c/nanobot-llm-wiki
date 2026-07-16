@@ -303,6 +303,7 @@ nanobot-wiki reindex
 nanobot-wiki dream --once
 nanobot-wiki ui --open
 nanobot-wiki ui --port 8877
+nanobot-wiki ui --read-only
 ```
 
 Every command supports a custom workspace:
@@ -327,8 +328,9 @@ The interface currently includes:
 - Graph search, type filters, node drag, zoom, pan, and minimap.
 - One-click index drift repair.
 - One-click Chinese and English switching with a persisted browser preference.
+- Read-only shared demos and reverse-proxy subpaths such as `/wiki/`.
 
-The server listens on `127.0.0.1` by default. Do not bind it directly to a public interface unless you add appropriate access controls.
+The server listens on `127.0.0.1` by default. Use `--read-only` for public demos. For online editing, put the UI behind HTTPS and additional access controls instead of binding the management interface directly to a public address.
 
 ## Storage Layout
 
