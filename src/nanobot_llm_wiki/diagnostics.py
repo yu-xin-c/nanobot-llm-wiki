@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from importlib.metadata import PackageNotFoundError, entry_points, version
 from pathlib import Path
@@ -19,6 +20,7 @@ EXPECTED_TOOL_ENTRY_POINTS = {
     "wiki_read",
     "wiki_search",
     "wiki_status",
+    "wiki_unlink",
     "wiki_upsert",
 }
 EXPECTED_TABLES = {"links", "page_fts", "pages"}
@@ -37,6 +39,7 @@ def diagnose_workspace(workspace: str | Path | None = None) -> dict[str, Any]:
     wiki_dir = root / "memory" / "wiki"
     pages_dir = wiki_dir / "pages"
     db_path = wiki_dir / "wiki.db"
+    links_path = wiki_dir / "links.jsonl"
     memory_path = root / "memory" / "MEMORY.md"
     skill_path = root / "skills" / "llm-wiki" / "SKILL.md"
     config_path = wiki_dir / "config.toml"
@@ -81,6 +84,7 @@ def diagnose_workspace(workspace: str | Path | None = None) -> dict[str, Any]:
         add("pages_dir", "Markdown pages", "error", "Markdown page directory is missing.", path=pages_dir)
 
     database_ids: set[str] | None = None
+    database_links: set[tuple[str, str, str]] | None = None
     fts_count: int | None = None
     if not db_path.is_file():
         add("database", "SQLite database", "error", "Wiki database is missing.", path=db_path)
@@ -100,6 +104,13 @@ def diagnose_workspace(workspace: str | Path | None = None) -> dict[str, Any]:
                     }
                 if "page_fts" in tables:
                     fts_count = int(conn.execute("SELECT COUNT(*) FROM page_fts").fetchone()[0])
+                if "links" in tables:
+                    database_links = {
+                        (str(row[0]), str(row[1]), str(row[2]))
+                        for row in conn.execute(
+                            "SELECT from_id, to_id, relation FROM links"
+                        ).fetchall()
+                    }
             if quick_check != "ok":
                 add(
                     "database",
@@ -165,6 +176,82 @@ def diagnose_workspace(workspace: str | Path | None = None) -> dict[str, Any]:
                 "Search index",
                 "ok",
                 f"Markdown and search index agree on {len(database_ids)} page(s).",
+            )
+
+    if not links_path.is_file():
+        add(
+            "link_source",
+            "Relationship source",
+            "error",
+            "Portable relationship source is missing.",
+            path=links_path,
+            action="install",
+        )
+    else:
+        source_links: set[tuple[str, str, str]] = set()
+        source_errors: list[str] = []
+        try:
+            lines = links_path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as exc:
+            source_errors.append(str(exc))
+        else:
+            for line_number, line in enumerate(lines, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    source_errors.append(f"line {line_number}: {exc.msg}")
+                    continue
+                if not isinstance(record, dict):
+                    source_errors.append(f"line {line_number}: expected an object")
+                    continue
+                from_id = str(record.get("from_id") or "").strip()
+                to_id = str(record.get("to_id") or "").strip()
+                relation = str(record.get("relation") or "related").strip() or "related"
+                created_at = str(record.get("created_at") or "").strip()
+                if not from_id or not to_id or not created_at:
+                    source_errors.append(f"line {line_number}: required fields are missing")
+                    continue
+                source_links.add((from_id, to_id, relation))
+        if source_errors:
+            add(
+                "link_source",
+                "Relationship source",
+                "error",
+                "Relationship source is invalid: " + "; ".join(source_errors[:3]) + ".",
+                path=links_path,
+            )
+        elif database_ids is not None and database_links is not None:
+            active_source_links = {
+                link
+                for link in source_links
+                if link[0] in database_ids and link[1] in database_ids
+            }
+            if active_source_links != database_links:
+                add(
+                    "link_source",
+                    "Relationship source",
+                    "warning",
+                    "Relationship source and graph index are out of sync.",
+                    path=links_path,
+                    action="reindex",
+                )
+            else:
+                add(
+                    "link_source",
+                    "Relationship source",
+                    "ok",
+                    f"Relationship source contains {len(source_links)} portable link(s).",
+                    path=links_path,
+                )
+        else:
+            add(
+                "link_source",
+                "Relationship source",
+                "ok",
+                f"Relationship source contains {len(source_links)} portable link(s).",
+                path=links_path,
             )
 
     if memory_path.is_file():

@@ -173,9 +173,54 @@ class WikiLinkTool(_WikiTool):
     async def execute(self, from_selector: str, to_selector: str, relation: str = "related") -> str:
         try:
             from_page, to_page = self.store.link_pages(from_selector, to_selector, relation)
-        except KeyError as exc:
+        except (KeyError, ValueError) as exc:
             return f"Error: {_error_text(exc)}"
         return f"Linked `{from_page.title}` -> `{to_page.title}` as `{relation or 'related'}`."
+
+
+class WikiUnlinkTool(_WikiTool):
+    @property
+    def name(self) -> str:
+        return "wiki_unlink"
+
+    @property
+    def description(self) -> str:
+        return "Remove one or all typed links between two NanoBot LLM Wiki pages."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "from_selector": {"type": "string"},
+                "to_selector": {"type": "string"},
+                "relation": {
+                    "type": ["string", "null"],
+                    "description": "Relation to remove; omit it to remove every directed link.",
+                },
+            },
+            "required": ["from_selector", "to_selector"],
+        }
+
+    async def execute(
+        self,
+        from_selector: str,
+        to_selector: str,
+        relation: str | None = None,
+    ) -> str:
+        try:
+            from_page, to_page, removed = self.store.unlink_pages(
+                from_selector,
+                to_selector,
+                relation,
+            )
+        except (KeyError, ValueError) as exc:
+            return f"Error: {_error_text(exc)}"
+        scope = f" as `{relation}`" if relation else ""
+        return (
+            f"Removed {removed} link(s) from `{from_page.title}` "
+            f"to `{to_page.title}`{scope}."
+        )
 
 
 class WikiForgetTool(_WikiTool):

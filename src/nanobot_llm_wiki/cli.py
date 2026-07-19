@@ -77,6 +77,15 @@ def build_parser() -> argparse.ArgumentParser:
     link.add_argument("to_selector")
     link.add_argument("--relation", default="related")
 
+    unlink = sub.add_parser("unlink", help="Remove graph links between two Wiki pages.")
+    unlink.add_argument("from_selector")
+    unlink.add_argument("to_selector")
+    unlink.add_argument(
+        "--relation",
+        default=None,
+        help="Only remove this relation; omit to remove every directed link.",
+    )
+
     dream = sub.add_parser("dream", help="Import new memory/history.jsonl entries.")
     dream.add_argument("--once", action="store_true", help="Run one deterministic ingestion pass.")
     dream.add_argument("--limit", type=int, default=50)
@@ -188,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "forget":
         try:
             page = store.forget_page(args.selector, archive=not args.delete)
-        except KeyError as exc:
+        except (KeyError, ValueError) as exc:
             print(f"Error: {_error_text(exc)}", file=sys.stderr)
             return 1
         store.write_memory_bridge()
@@ -197,10 +206,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "link":
         try:
             from_page, to_page = store.link_pages(args.from_selector, args.to_selector, args.relation)
-        except KeyError as exc:
+        except (KeyError, ValueError) as exc:
             print(f"Error: {_error_text(exc)}", file=sys.stderr)
             return 1
         print(f"Linked {from_page.title} -> {to_page.title} ({args.relation or 'related'})")
+        return 0
+    if args.command == "unlink":
+        try:
+            from_page, to_page, removed = store.unlink_pages(
+                args.from_selector,
+                args.to_selector,
+                args.relation,
+            )
+        except (KeyError, ValueError) as exc:
+            print(f"Error: {_error_text(exc)}", file=sys.stderr)
+            return 1
+        print(f"Removed {removed} link(s): {from_page.title} -> {to_page.title}")
         return 0
     if args.command == "dream":
         if not args.once:

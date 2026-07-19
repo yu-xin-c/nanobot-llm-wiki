@@ -7,6 +7,8 @@ import json
 import re
 import shutil
 import sqlite3
+import tempfile
+import threading
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +33,7 @@ IMPORT_EXTENSIONS = {
     ".yaml",
     ".yml",
 }
+_LINK_SOURCE_LOCK = threading.RLock()
 
 
 def utc_now() -> str:
@@ -165,6 +168,7 @@ class WikiStore:
         self.pages_dir = self.wiki_dir / "pages"
         self.archive_dir = self.wiki_dir / "archive"
         self.db_path = self.wiki_dir / "wiki.db"
+        self.links_path = self.wiki_dir / "links.jsonl"
         self.cursor_path = self.wiki_dir / ".cursor"
         if create:
             self.init()
@@ -219,11 +223,153 @@ class WikiStore:
                     )
                     """
                 )
+        self._initialize_link_source()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _link_key(record: dict[str, str]) -> tuple[str, str, str]:
+        return record["from_id"], record["to_id"], record["relation"]
+
+    def _read_link_source(self) -> tuple[list[dict[str, str]], list[str]]:
+        records: list[dict[str, str]] = []
+        skipped: list[str] = []
+        seen: set[tuple[str, str, str]] = set()
+        try:
+            lines = self.links_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return records, skipped
+        except OSError as exc:
+            return records, [f"{self.links_path.name}: {exc}"]
+
+        for line_number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError as exc:
+                skipped.append(f"{self.links_path.name} line {line_number}: {exc.msg}")
+                continue
+            if not isinstance(raw, dict):
+                skipped.append(f"{self.links_path.name} line {line_number}: expected an object")
+                continue
+            record = {
+                "from_id": str(raw.get("from_id") or "").strip(),
+                "to_id": str(raw.get("to_id") or "").strip(),
+                "relation": str(raw.get("relation") or "related").strip() or "related",
+                "created_at": str(raw.get("created_at") or "").strip(),
+            }
+            if not record["from_id"] or not record["to_id"] or not record["created_at"]:
+                skipped.append(
+                    f"{self.links_path.name} line {line_number}: "
+                    "from_id, to_id, and created_at are required"
+                )
+                continue
+            key = self._link_key(record)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(record)
+        return records, skipped
+
+    def _write_link_source(self, records: list[dict[str, str]]) -> None:
+        self.links_path.parent.mkdir(parents=True, exist_ok=True)
+        text = "".join(
+            f"{json.dumps(record, ensure_ascii=False, sort_keys=True)}\n"
+            for record in records
+        )
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.links_path.parent,
+                prefix=f".{self.links_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                handle.write(text)
+                temporary_path = Path(handle.name)
+            temporary_path.replace(self.links_path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    def _database_link_records(self) -> list[dict[str, str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT from_id, to_id, relation, created_at
+                FROM links
+                ORDER BY created_at ASC, from_id ASC, to_id ASC, relation ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "from_id": str(row["from_id"]),
+                "to_id": str(row["to_id"]),
+                "relation": str(row["relation"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def _initialize_link_source(self) -> None:
+        with _LINK_SOURCE_LOCK:
+            if not self.links_path.exists():
+                self._write_link_source(self._database_link_records())
+                return
+            records, skipped = self._read_link_source()
+            if not skipped:
+                self._replace_link_index(records)
+
+    def _replace_link_index(self, records: list[dict[str, str]]) -> tuple[int, list[str]]:
+        indexed = 0
+        deferred: list[str] = []
+        with self._connect() as conn:
+            page_ids = {
+                str(row["id"])
+                for row in conn.execute("SELECT id FROM pages").fetchall()
+            }
+            conn.execute("DELETE FROM links")
+            for record in records:
+                if record["from_id"] not in page_ids or record["to_id"] not in page_ids:
+                    deferred.append(
+                        f"{record['from_id']} -> {record['to_id']}: page is not active"
+                    )
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO links(from_id, to_id, relation, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        record["from_id"],
+                        record["to_id"],
+                        record["relation"],
+                        record["created_at"],
+                    ),
+                )
+                indexed += 1
+        return indexed, deferred
+
+    def _remove_link_source_records_for_page(self, page_id: str) -> int:
+        with _LINK_SOURCE_LOCK:
+            records, skipped = self._read_link_source()
+            if skipped:
+                raise ValueError("cannot update links.jsonl: " + "; ".join(skipped))
+            retained = [
+                record
+                for record in records
+                if record["from_id"] != page_id and record["to_id"] != page_id
+            ]
+            removed = len(records) - len(retained)
+            if removed:
+                self._write_link_source(retained)
+            return removed
 
     def page_path(self, page_id: str) -> Path:
         return self.pages_dir / f"{page_id}.md"
@@ -241,22 +387,35 @@ class WikiStore:
     def _row_to_page(self, row: sqlite3.Row | None) -> WikiPage | None:
         return WikiPage.from_row(row) if row is not None else None
 
+    def _get_page_by_id(self, page_id: str) -> WikiPage | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM pages WHERE id = ?", (page_id,)).fetchone()
+        return self._row_to_page(row)
+
+    def _get_page_by_title(self, title: str) -> WikiPage | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pages WHERE lower(title) = lower(?)",
+                (title,),
+            ).fetchone()
+        return self._row_to_page(row)
+
     def get_page(self, selector: str) -> WikiPage | None:
         selector = selector.strip()
         if not selector:
             return None
-        candidates = [selector, slugify(selector)]
+        exact_id = self._get_page_by_id(selector)
+        if exact_id:
+            return exact_id
+        exact_title = self._get_page_by_title(selector)
+        if exact_title:
+            return exact_title
+        normalized_id = slugify(selector)
+        if normalized_id != selector:
+            normalized_page = self._get_page_by_id(normalized_id)
+            if normalized_page:
+                return normalized_page
         with self._connect() as conn:
-            for candidate in candidates:
-                row = conn.execute("SELECT * FROM pages WHERE id = ?", (candidate,)).fetchone()
-                if row:
-                    return self._row_to_page(row)
-            row = conn.execute(
-                "SELECT * FROM pages WHERE lower(title) = lower(?)",
-                (selector,),
-            ).fetchone()
-            if row:
-                return self._row_to_page(row)
             rows = conn.execute("SELECT * FROM pages").fetchall()
         lowered = selector.casefold()
         for row in rows:
@@ -291,9 +450,13 @@ class WikiStore:
         if mode not in {"replace", "append"}:
             raise ValueError("mode must be 'replace' or 'append'")
 
-        existing = self.get_page(page_id or title)
+        if page_id:
+            resolved_id = slugify(page_id)
+            existing = self._get_page_by_id(resolved_id)
+        else:
+            existing = self._get_page_by_title(title.strip())
+            resolved_id = existing.id if existing else self._available_page_id(title)
         now = utc_now()
-        resolved_id = existing.id if existing else slugify(page_id or title)
         resolved_content = content.strip()
         if existing and mode == "append":
             resolved_content = self._append_content(existing.content, resolved_content)
@@ -315,6 +478,18 @@ class WikiStore:
         )
         self._save_page(page)
         return page
+
+    def _available_page_id(self, title: str) -> str:
+        base = slugify(title)
+        if self._get_page_by_id(base) is None:
+            return base
+        digest = _short_hash(title.strip().casefold(), length=8)
+        candidate = f"{base}-{digest}"
+        suffix = 2
+        while self._get_page_by_id(candidate) is not None:
+            candidate = f"{base}-{digest}-{suffix}"
+            suffix += 1
+        return candidate
 
     @staticmethod
     def _append_content(existing: str, addition: str) -> str:
@@ -555,6 +730,9 @@ class WikiStore:
             self._delete_page_record(page_id)
             removed.append(page_id)
 
+        with _LINK_SOURCE_LOCK:
+            link_records, link_source_skipped = self._read_link_source()
+            links_indexed, deferred_links = self._replace_link_index(link_records)
         self.write_memory_bridge()
         return {
             "indexed": len(indexed),
@@ -562,6 +740,8 @@ class WikiStore:
             "skipped": skipped,
             "page_ids": indexed,
             "removed_ids": removed,
+            "links_indexed": links_indexed,
+            "links_skipped": [*link_source_skipped, *deferred_links],
         }
 
     def _delete_page_record(self, page_id: str) -> None:
@@ -783,22 +963,91 @@ class WikiStore:
             return True
         return any(tag.casefold() == tag_filter for tag in page.tags)
 
-    def link_pages(self, from_selector: str, to_selector: str, relation: str = "related") -> tuple[WikiPage, WikiPage]:
+    def link_pages(
+        self,
+        from_selector: str,
+        to_selector: str,
+        relation: str = "related",
+    ) -> tuple[WikiPage, WikiPage]:
         from_page = self.get_page(from_selector)
         to_page = self.get_page(to_selector)
         if not from_page:
             raise KeyError(f"page not found: {from_selector}")
         if not to_page:
             raise KeyError(f"page not found: {to_selector}")
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO links(from_id, to_id, relation, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (from_page.id, to_page.id, relation.strip() or "related", utc_now()),
+        resolved_relation = relation.strip() or "related"
+        with _LINK_SOURCE_LOCK:
+            records, skipped = self._read_link_source()
+            if skipped:
+                raise ValueError("cannot update links.jsonl: " + "; ".join(skipped))
+            key = (from_page.id, to_page.id, resolved_relation)
+            existing = next(
+                (record for record in records if self._link_key(record) == key),
+                None,
             )
+            if existing is None:
+                existing = {
+                    "from_id": from_page.id,
+                    "to_id": to_page.id,
+                    "relation": resolved_relation,
+                    "created_at": utc_now(),
+                }
+                records.append(existing)
+                self._write_link_source(records)
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO links(from_id, to_id, relation, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        from_page.id,
+                        to_page.id,
+                        resolved_relation,
+                        existing["created_at"],
+                    ),
+                )
         return from_page, to_page
+
+    def unlink_pages(
+        self,
+        from_selector: str,
+        to_selector: str,
+        relation: str | None = None,
+    ) -> tuple[WikiPage, WikiPage, int]:
+        from_page = self.get_page(from_selector)
+        to_page = self.get_page(to_selector)
+        if not from_page:
+            raise KeyError(f"page not found: {from_selector}")
+        if not to_page:
+            raise KeyError(f"page not found: {to_selector}")
+        resolved_relation = relation.strip() or "related" if relation is not None else None
+        with _LINK_SOURCE_LOCK:
+            records, skipped = self._read_link_source()
+            if skipped:
+                raise ValueError("cannot update links.jsonl: " + "; ".join(skipped))
+
+            def should_remove(record: dict[str, str]) -> bool:
+                if record["from_id"] != from_page.id or record["to_id"] != to_page.id:
+                    return False
+                return resolved_relation is None or record["relation"] == resolved_relation
+
+            retained = [record for record in records if not should_remove(record)]
+            removed = len(records) - len(retained)
+            if removed:
+                self._write_link_source(retained)
+            with self._connect() as conn:
+                if resolved_relation is None:
+                    conn.execute(
+                        "DELETE FROM links WHERE from_id = ? AND to_id = ?",
+                        (from_page.id, to_page.id),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM links WHERE from_id = ? AND to_id = ? AND relation = ?",
+                        (from_page.id, to_page.id, resolved_relation),
+                    )
+        return from_page, to_page, removed
 
     def list_links(self) -> list[WikiLink]:
         with self._connect() as conn:
@@ -865,6 +1114,8 @@ class WikiStore:
         page = self.get_page(selector)
         if not page:
             raise KeyError(f"page not found: {selector}")
+        if not archive:
+            self._remove_link_source_records_for_page(page.id)
         source_path = self.page_path(page.id)
         if source_path.exists():
             if archive:
@@ -883,6 +1134,7 @@ class WikiStore:
             "workspace": str(self.workspace),
             "wiki_dir": str(self.wiki_dir),
             "db_path": str(self.db_path),
+            "links_path": str(self.links_path),
             "pages": page_count,
             "links": link_count,
             "cursor": self.get_cursor(),
@@ -961,7 +1213,8 @@ class WikiStore:
         block = (
             f"{BRIDGE_START}\n"
             "## LLM Wiki Memory\n\n"
-            "Long-term memory is stored in `memory/wiki/` as Markdown pages plus a SQLite index.\n"
+            "Long-term memory is stored in `memory/wiki/` as Markdown pages and `links.jsonl`, "
+            "plus a rebuildable SQLite index.\n"
             "Use `wiki_search` for broad recall and `wiki_read` for exact page context before relying on old facts.\n\n"
             "### Active Wiki Pages\n"
             f"{page_lines}\n"
@@ -1056,6 +1309,7 @@ NanoBot has a local Wiki-backed long-term memory at `memory/wiki/`.
 - Use `wiki_read(selector=...)` before relying on details from a page.
 - Use `wiki_upsert(title=..., content=..., mode="append")` to record durable facts.
 - Use `wiki_link(from_selector=..., to_selector=...)` to connect related pages.
+- Use `wiki_unlink(from_selector=..., to_selector=...)` to remove stale relationships.
 - Use `wiki_import(path=...)` when the user asks to import a local folder or text knowledge base.
 - Use `wiki_forget(selector=...)` when the user asks to delete a memory.
 - Use `wiki_doctor()` when Wiki recall or installation health appears broken.

@@ -41,8 +41,9 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
             html = response.read().decode("utf-8")
         assert "NanoBot LLM Wiki" in html
         assert "Memory Dashboard" in html
-        assert '<html lang="en">' in html
+        assert '<html lang="zh-CN">' in html
         assert 'id="languageBtn"' in html
+        assert 'id="unlinkBtn"' in html
         assert 'data-i18n="dashboard"' in html
         assert "nanobot_llm_wiki_language_v2" in html
         assert "const translations" in html
@@ -130,6 +131,20 @@ def test_ui_serves_page_and_api(tmp_path) -> None:
         assert {"UI Smoke", "Created From UI", "UI Imported Docs", "UI Import Guide"}.issubset(graph_titles)
         assert "mentions" in {link["relation"] for link in graph["links"]}
 
+        unlinked = _json_request(
+            base_url + "/api/links",
+            method="DELETE",
+            payload={
+                "from_selector": "Created From UI",
+                "to_selector": "UI Smoke",
+                "relation": "mentions",
+            },
+        )
+        assert unlinked["removed"] == 1
+        assert "mentions" not in {
+            item["relation"] for item in _json_get(base_url + "/api/links")["links"]
+        }
+
         deleted = _json_request(
             base_url + "/api/pages/" + quote("Created From UI"),
             method="DELETE",
@@ -165,6 +180,14 @@ def test_ui_read_only_mode_rejects_mutations(tmp_path) -> None:
         with pytest.raises(HTTPError) as delete_error:
             _json_request(base_url + "/api/pages/public-demo", method="DELETE")
         assert delete_error.value.code == 405
+
+        with pytest.raises(HTTPError) as unlink_error:
+            _json_request(
+                base_url + "/api/links",
+                method="DELETE",
+                payload={"from_selector": "Public Demo", "to_selector": "Public Demo"},
+            )
+        assert unlink_error.value.code == 405
         assert [page.title for page in store.list_pages()] == ["Public Demo"]
     finally:
         server.shutdown()

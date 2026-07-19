@@ -18,6 +18,7 @@ from nanobot_llm_wiki.tools import (
     WikiLinkTool,
     WikiReadTool,
     WikiSearchTool,
+    WikiUnlinkTool,
     WikiUpsertTool,
 )
 
@@ -86,6 +87,22 @@ def test_cli_link(tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     assert "Linked User Profile -> Projects (uses)" in out
     assert WikiStore(tmp_path).list_links()[0].relation == "uses"
+
+    assert (
+        main([
+            "--workspace",
+            str(tmp_path),
+            "unlink",
+            "User Profile",
+            "Projects",
+            "--relation",
+            "uses",
+        ])
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "Removed 1 link(s): User Profile -> Projects" in out
+    assert WikiStore(tmp_path).list_links() == []
 
 
 def test_cli_import_knowledge_base(tmp_path, capsys) -> None:
@@ -192,11 +209,13 @@ def test_tools_round_trip(tmp_path) -> None:
 
 def test_tools_return_errors_for_bad_inputs(tmp_path) -> None:
     link_tool = WikiLinkTool(tmp_path)
+    unlink_tool = WikiUnlinkTool(tmp_path)
     forget_tool = WikiForgetTool(tmp_path)
     import_tool = WikiImportTool(tmp_path)
     upsert_tool = WikiUpsertTool(tmp_path)
 
     assert asyncio.run(link_tool.execute("missing", "also missing")).startswith("Error: page not found")
+    assert asyncio.run(unlink_tool.execute("missing", "also missing")).startswith("Error: page not found")
     assert asyncio.run(forget_tool.execute("missing")).startswith("Error: page not found")
     assert asyncio.run(import_tool.execute(str(tmp_path / "missing"))).startswith("Error: raw")
     assert asyncio.run(upsert_tool.execute(title="", content="empty title")).startswith("Error: title")
@@ -242,11 +261,17 @@ def test_nanobot_tool_loader_can_register_plugin_tools(tmp_path) -> None:
         WikiUpsertTool,
         WikiImportTool,
         WikiDoctorTool,
+        WikiUnlinkTool,
     ]).load(ctx, registry)
 
-    assert {"wiki_search", "wiki_read", "wiki_upsert", "wiki_import", "wiki_doctor"}.issubset(
-        set(registered)
-    )
+    assert {
+        "wiki_search",
+        "wiki_read",
+        "wiki_upsert",
+        "wiki_import",
+        "wiki_doctor",
+        "wiki_unlink",
+    }.issubset(set(registered))
     assert registry.has("wiki_search")
     store = WikiStore(tmp_path)
     store.upsert_page(title="Loader Smoke", content="Tool loader can construct Wiki tools.")

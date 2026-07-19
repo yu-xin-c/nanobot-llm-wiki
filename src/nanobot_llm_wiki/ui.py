@@ -237,6 +237,29 @@ def build_server(
             if self._reject_read_only_write():
                 return
             parsed = urlparse(self.path)
+            if parsed.path == "/api/links":
+                try:
+                    body = self._read_json()
+                    relation_value = body.get("relation")
+                    relation = (
+                        str(relation_value).strip() or "related"
+                        if relation_value is not None
+                        else None
+                    )
+                    from_page, to_page, removed = store.unlink_pages(
+                        str(body.get("from_selector") or "").strip(),
+                        str(body.get("to_selector") or "").strip(),
+                        relation,
+                    )
+                except (KeyError, ValueError) as exc:
+                    self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json({
+                    "from_page": _page_to_dict(from_page),
+                    "to_page": _page_to_dict(to_page),
+                    "removed": removed,
+                })
+                return
             if not parsed.path.startswith("/api/pages/"):
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
@@ -246,8 +269,9 @@ def build_server(
             try:
                 page = store.forget_page(selector, archive=archive)
                 store.write_memory_bridge()
-            except KeyError as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except (KeyError, ValueError) as exc:
+                status = HTTPStatus.NOT_FOUND if isinstance(exc, KeyError) else HTTPStatus.BAD_REQUEST
+                self._send_json({"error": str(exc)}, status)
                 return
             self._send_json({"page": _page_to_dict(page), "archived": archive})
 
@@ -276,7 +300,7 @@ def run_ui(
 
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1777,6 +1801,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="toolbar">
             <button class="primary" type="submit" id="saveBtn" data-i18n="save">保存</button>
             <button type="button" id="linkBtn" data-i18n="link">创建关系</button>
+            <button type="button" id="unlinkBtn" data-i18n="unlink">解除关系</button>
             <button type="button" id="refreshBtn" data-i18n="refresh">刷新</button>
             <button class="danger" type="button" id="archiveBtn" data-i18n="archive">归档</button>
           </div>
@@ -1918,6 +1943,7 @@ INDEX_HTML = r"""<!doctype html>
         relation: "关系类型",
         save: "保存",
         link: "创建关系",
+        unlink: "解除关系",
         archive: "归档",
         pageSignals: "页面信号",
         updated: "更新时间",
@@ -1997,6 +2023,7 @@ INDEX_HTML = r"""<!doctype html>
         archived: "已归档。",
         chooseLink: "请先选择当前页面和目标页面。",
         linked: "关系已创建。",
+        unlinked: "已解除 {count} 条关系。",
         saved: "已保存。"
       },
       en: {
@@ -2045,6 +2072,7 @@ INDEX_HTML = r"""<!doctype html>
         relation: "Relation",
         save: "Save",
         link: "Link",
+        unlink: "Unlink",
         archive: "Archive",
         pageSignals: "Page Signals",
         updated: "Updated",
@@ -2124,6 +2152,7 @@ INDEX_HTML = r"""<!doctype html>
         archived: "Archived.",
         chooseLink: "Choose the current page and a target page first.",
         linked: "Linked.",
+        unlinked: "Removed {count} link(s).",
         saved: "Saved."
       }
     };
@@ -2151,6 +2180,7 @@ INDEX_HTML = r"""<!doctype html>
       pages_dir: "Markdown 页面",
       database: "SQLite 数据库",
       index_sync: "搜索索引",
+      link_source: "关系数据源",
       memory_bridge: "记忆桥",
       skill: "NanoBot 技能",
       config: "工作区配置",
@@ -2167,6 +2197,9 @@ INDEX_HTML = r"""<!doctype html>
       "database.error": "SQLite 数据库缺失、损坏或结构不完整。",
       "index_sync.ok": "Markdown 页面与搜索索引保持一致。",
       "index_sync.warning": "Markdown 页面与搜索索引不一致，请重建索引。",
+      "link_source.ok": "可迁移的关系数据源与图索引保持一致。",
+      "link_source.warning": "关系数据源与图索引不一致，请重建索引。",
+      "link_source.error": "关系数据源缺失或格式无效。",
       "memory_bridge.ok": "NanoBot 记忆桥已就绪。",
       "memory_bridge.error": "MEMORY.md 中缺少 Wiki 记忆桥。",
       "skill.ok": "Wiki 技能已包含核心记忆工作流。",
@@ -2210,7 +2243,7 @@ INDEX_HTML = r"""<!doctype html>
       $("readOnlyBadge").classList.toggle("hidden", !readOnly);
       $("writeToolsPanel").classList.toggle("hidden", readOnly);
       $("dashboardGrid").classList.toggle("single-column", readOnly);
-      ["newBtn", "quickNewBtn", "quickReindexBtn", "saveBtn", "linkBtn", "archiveBtn"].forEach((id) => {
+      ["newBtn", "quickNewBtn", "quickReindexBtn", "saveBtn", "linkBtn", "unlinkBtn", "archiveBtn"].forEach((id) => {
         $(id).classList.toggle("hidden", readOnly);
       });
       ["title", "pageType", "tags", "confidence", "aliases", "content", "linkTarget", "linkRelation"].forEach((id) => {
@@ -2219,9 +2252,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     function loadLanguage() {
       try {
-        return localStorage.getItem(languageStoreKey) === "zh" ? "zh" : "en";
+        return localStorage.getItem(languageStoreKey) === "en" ? "en" : "zh";
       } catch (_error) {
-        return "en";
+        return "zh";
       }
     }
     function t(key, values = {}) {
@@ -3515,6 +3548,23 @@ INDEX_HTML = r"""<!doctype html>
       });
       $("linkTarget").value = "";
       message(t("linked"));
+    });
+    $("unlinkBtn").addEventListener("click", async () => {
+      const from = $("pageId").value || $("title").value;
+      const to = $("linkTarget").value;
+      if (!from || !to) {
+        message(t("chooseLink"));
+        return;
+      }
+      const relation = $("linkRelation").value.trim();
+      const body = { from_selector: from, to_selector: to };
+      if (relation) body.relation = relation;
+      const result = await api("/api/links", {
+        method: "DELETE",
+        body: JSON.stringify(body)
+      });
+      $("linkTarget").value = "";
+      message(t("unlinked", { count: result.removed }));
     });
     $("editor").addEventListener("submit", async (event) => {
       event.preventDefault();

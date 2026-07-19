@@ -28,6 +28,7 @@ assert_installation() {
 
   test -x "$TMP_ROOT/$scenario/bin/nanobot"
   test -x "$TMP_ROOT/$scenario/bin/nanobot-wiki"
+  test -f "$workspace/memory/wiki/links.jsonl"
   "$TMP_ROOT/$scenario/bin/nanobot-wiki" --workspace "$workspace" doctor --json \
     > "$TMP_ROOT/$scenario/doctor.json"
   "$tool_env/bin/python" - "$TMP_ROOT/$scenario/doctor.json" <<'PY'
@@ -46,6 +47,7 @@ expected = {
     "wiki_read",
     "wiki_search",
     "wiki_status",
+    "wiki_unlink",
     "wiki_upsert",
 }
 registered = {

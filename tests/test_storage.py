@@ -42,6 +42,20 @@ def test_upsert_search_read_and_forget(tmp_path) -> None:
     assert list(store.archive_dir.glob("project-memory-*.md"))
 
 
+def test_upsert_allocates_distinct_ids_for_slug_collisions(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+
+    first = store.upsert_page(title="Alpha Beta", content="First page.")
+    second = store.upsert_page(title="Alpha-Beta", content="Second page.")
+
+    assert first.id == "alpha-beta"
+    assert second.id.startswith("alpha-beta-")
+    assert second.id != first.id
+    assert store.status()["pages"] == 2
+    assert store.get_page("alpha-beta").content == "First page."
+    assert store.get_page("Alpha-Beta").content == "Second page."
+
+
 def test_recall_uses_aliases_precise_tokens_and_deletion_cleanup(tmp_path) -> None:
     store = WikiStore(tmp_path)
     store.upsert_page(
@@ -120,6 +134,47 @@ def test_page_links_and_graph(tmp_path) -> None:
             "created_at": links[0].created_at,
         }
     ]
+
+    _, _, removed = store.unlink_pages("User Profile", "NanoBot Project", "working_on")
+    assert removed == 1
+    assert store.list_links() == []
+    assert store.links_path.read_text(encoding="utf-8") == ""
+
+
+def test_links_survive_database_rebuild_from_portable_source(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(title="Source Page", content="Source.")
+    store.upsert_page(title="Target Page", content="Target.")
+    store.link_pages("Source Page", "Target Page", "supports")
+
+    source_record = json.loads(store.links_path.read_text(encoding="utf-8"))
+    assert source_record["from_id"] == "source-page"
+    assert source_record["to_id"] == "target-page"
+
+    store.db_path.unlink()
+    rebuilt = WikiStore(tmp_path)
+    result = rebuilt.reindex_from_disk()
+
+    assert result["links_indexed"] == 1
+    assert result["links_skipped"] == []
+    assert [(link.from_id, link.to_id, link.relation) for link in rebuilt.list_links()] == [
+        ("source-page", "target-page", "supports")
+    ]
+
+
+def test_existing_database_links_are_migrated_when_source_is_missing(tmp_path) -> None:
+    store = WikiStore(tmp_path)
+    store.upsert_page(title="Old Source", content="Source.")
+    store.upsert_page(title="Old Target", content="Target.")
+    store.link_pages("Old Source", "Old Target", "precedes")
+    store.links_path.unlink()
+
+    migrated = WikiStore(tmp_path)
+    record = json.loads(migrated.links_path.read_text(encoding="utf-8"))
+
+    assert record["from_id"] == "old-source"
+    assert record["to_id"] == "old-target"
+    assert record["relation"] == "precedes"
 
 
 def test_skill_writer_does_not_overwrite_user_skill(tmp_path) -> None:

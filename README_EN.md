@@ -45,8 +45,8 @@ Conversation memory commonly has three problems: context gets truncated, old fac
 - **Searchable:** titles, content, tags, and aliases are indexed by SQLite full-text search.
 - **Connected:** pages can use typed relationships such as `tracks`, `uses`, and `depends_on`.
 - **Manageable:** the built-in UI includes a dashboard, page editor, knowledge graph, archive actions, imports, and index repair.
-- **Bilingual:** switch the whole interface between English and Chinese from the header. English is the first-run default, and the browser remembers the selection.
-- **Agent native:** eight Wiki tools are registered through NanoBot Python entry points without patching NanoBot core.
+- **Bilingual:** switch the whole interface between Chinese and English from the header. Chinese is the first-run default, and the browser remembers the selection.
+- **Agent native:** nine Wiki tools are registered through NanoBot Python entry points without patching NanoBot core.
 
 ## Interface Preview
 
@@ -109,7 +109,7 @@ Open the Wiki management UI:
 nanobot-wiki ui --open
 ```
 
-The default URL is [http://127.0.0.1:8766](http://127.0.0.1:8766). The interface starts in English on first use; select `中文` in the header to switch to Chinese.
+The default URL is [http://127.0.0.1:8766](http://127.0.0.1:8766). The interface starts in Chinese on first use; select `EN` in the header to switch to English.
 
 ### Verify The Installation
 
@@ -125,7 +125,7 @@ When NanoBot starts with `-v`, its log should list:
 
 ```text
 wiki_doctor, wiki_forget, wiki_import, wiki_link,
-wiki_read, wiki_search, wiki_status, wiki_upsert
+wiki_read, wiki_search, wiki_status, wiki_unlink, wiki_upsert
 ```
 
 ## Installation And Maintenance
@@ -227,9 +227,10 @@ nanobot-wiki upsert "Current Project" \
 
 ```bash
 nanobot-wiki link "Projects" "Current Project" --relation tracks
+nanobot-wiki unlink "Projects" "Current Project" --relation tracks
 ```
 
-The relationship is stored in the SQLite `links` table and appears in the graph UI.
+The relationship is persisted in portable `links.jsonl`, indexed in SQLite, and shown in the graph UI. Omit `--relation` from `unlink` to remove every directed link between the two pages.
 
 ### Import A Knowledge Base
 
@@ -260,11 +261,13 @@ The importer skips hidden files, unsupported extensions, oversized files, and no
 
 ```mermaid
 flowchart LR
-  User["User or NanoBot"] --> Tools["8 Wiki tools"]
+  User["User or NanoBot"] --> Tools["9 Wiki tools"]
   Tools --> Store["WikiStore"]
   Store --> Markdown["Markdown pages"]
-  Store --> SQLite["SQLite pages / FTS / links"]
+  Store --> LinkSource["links.jsonl relationship source"]
+  Store --> SQLite["SQLite pages / FTS / graph index"]
   Store --> Bridge["MEMORY.md bridge"]
+  LinkSource --> SQLite
   Markdown --> UI["Dashboard / Editor"]
   SQLite --> Search["Full-text search"]
   SQLite --> Graph["Knowledge graph"]
@@ -290,9 +293,9 @@ flowchart LR
 ### Forget Path
 
 1. `wiki_forget(selector=...)` removes a page from active indexes.
-2. Related graph links and full-text entries are deleted.
-3. The Markdown file moves to `archive/` by default for audit and manual recovery.
-4. CLI `--delete` or tool argument `archive=false` permanently removes the source file.
+2. Related graph links and full-text entries are removed from the active SQLite index.
+3. The Markdown file moves to `archive/` by default while portable link records remain available for audit and manual recovery.
+4. CLI `--delete` or tool argument `archive=false` permanently removes the source file and its relationship records.
 
 ### Manual Markdown Edits
 
@@ -310,6 +313,7 @@ nanobot-wiki reindex
 | `wiki_read(selector)` | Read a complete page by title, id, or alias. |
 | `wiki_upsert(title, content, ...)` | Create, replace, or append a page. |
 | `wiki_link(from_selector, to_selector, relation)` | Create a typed page relationship. |
+| `wiki_unlink(from_selector, to_selector, relation)` | Remove one relation, or all directed links when relation is omitted. |
 | `wiki_import(path, index_title, tags, ...)` | Import a local text file or directory. |
 | `wiki_forget(selector, archive)` | Archive or permanently delete a page. |
 | `wiki_status()` | Return workspace, page, link, and cursor status. |
@@ -337,6 +341,7 @@ nanobot-wiki forget "Current Project" --delete
 
 # Graph and import
 nanobot-wiki link "Projects" "Current Project" --relation tracks
+nanobot-wiki unlink "Projects" "Current Project" --relation tracks
 nanobot-wiki import ./docs --index-title "Project Docs" --tag docs
 
 # Index, history, and UI
@@ -365,7 +370,7 @@ The interface currently includes:
 - Page listing, full-text search, create, edit, and archive actions.
 - Page types, tags, aliases, and confidence.
 - Local text knowledge-base imports.
-- Manual typed relationships.
+- Create and remove typed relationships.
 - Graph search, type filters, node drag, zoom, pan, and minimap.
 - One-click index drift repair.
 - One-click Chinese and English switching with a persisted browser preference.
@@ -380,7 +385,8 @@ The server listens on `127.0.0.1` by default. Use `--read-only` for public demos
   memory/
     MEMORY.md                  # NanoBot memory bridge; preserves existing content
     wiki/
-      wiki.db                  # Pages, full-text index, and graph links
+      wiki.db                  # Rebuildable page, full-text, and graph indexes
+      links.jsonl              # Portable, version-friendly relationship source
       config.toml              # Workspace-level plugin configuration placeholder
       pages/*.md               # Active Wiki pages
       archive/*.md             # Archived pages
@@ -389,7 +395,7 @@ The server listens on `127.0.0.1` by default. Use `--read-only` for public demos
     llm-wiki/SKILL.md          # Wiki tool usage policy
 ```
 
-Markdown is the inspectable and portable source. SQLite is a rebuildable search and relationship layer. Back up the complete `memory/wiki/` directory to preserve pages, indexes, links, and archives.
+Markdown pages and `links.jsonl` are the inspectable, portable sources. SQLite is a rebuildable page, search, and graph index. Back up the complete `memory/wiki/` directory to preserve pages, indexes, links, and archives.
 
 ## Diagnostics And Repair
 
@@ -403,10 +409,11 @@ nanobot-wiki doctor
 - SQLite integrity and required tables.
 - Agreement between Markdown pages and database records.
 - FTS row drift.
+- Validity and active-index agreement of `links.jsonl`.
 - The `MEMORY.md` bridge.
 - The `llm-wiki` skill.
 - Workspace configuration.
-- All eight NanoBot tool entry points.
+- All nine NanoBot tool entry points.
 
 Repair index drift:
 
@@ -422,7 +429,7 @@ nanobot-wiki install
 
 ## Privacy And Boundaries
 
-- Wiki pages and SQLite data stay in the local NanoBot workspace by default.
+- Wiki pages, relationship sources, and SQLite data stay in the local NanoBot workspace by default.
 - The plugin adds no independent cloud database or telemetry service.
 - Recalled content may still be sent to the LLM provider configured in NanoBot. Local-first storage does not mean fully offline model inference.
 - `wiki_import` reads a user-selected local path. Import trusted content only.
@@ -435,9 +442,9 @@ The project is currently **Beta** and targets personal NanoBot workspaces and lo
 
 Available now:
 
-- Markdown and SQLite persistence.
+- Markdown and JSONL persistence with rebuildable SQLite indexes.
 - Exact match, full-text search, and substring fallback.
-- Eight NanoBot tools.
+- Nine NanoBot tools.
 - Page management, knowledge imports, graph, diagnostics, and bilingual UI.
 - Index rebuild after manual Markdown edits.
 - Automated CLI, registration, storage, HTTP API, and real isolated NanoBot installation tests.
